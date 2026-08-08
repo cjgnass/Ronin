@@ -85,11 +85,12 @@ void Engine::createInstance() {
   if (enableValidationLayers) {
     extensions.push_back(vk::EXTDebugUtilsExtensionName);
   }
+  extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
 
   // create instance
   vk::InstanceCreateInfo instanceInfo{
       .pNext = instance_info_p_next,
-      .flags = vk::InstanceCreateFlags(),
+      .flags = vk::InstanceCreateFlags() | vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR,
       .pApplicationInfo = &appInfo,
       .enabledLayerCount = static_cast<uint32_t>(layers.size()),
       .ppEnabledLayerNames = layers.data(),
@@ -134,7 +135,7 @@ void Engine::pickPhysicalDevice() {
       continue;
     }
     if (properties.deviceType != vk::PhysicalDeviceType::eDiscreteGpu) {
-      continue;
+      score += 10000;
     }
     score += properties.limits.maxImageDimension2D;
 
@@ -236,7 +237,8 @@ void Engine::createImageViews() {
 void Engine::createDevice() {
   // extension check
   std::vector<const char *> requiredDeviceExtensions = {
-      vk::KHRSwapchainExtensionName};
+      vk::KHRSwapchainExtensionName,
+      "VK_KHR_portability_subset"};
   auto availableDeviceExtensions =
       physicalDevice.enumerateDeviceExtensionProperties();
   bool supportsAllRequiredExtensions = std::ranges::all_of(
