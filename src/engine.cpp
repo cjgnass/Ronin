@@ -41,6 +41,7 @@ void Engine::initVulkan() {
   createSwapchain();
   createImageViews();
   createPipeline();
+  createVertexBuffer();
   createCommandPool();
   createCommandBuffer();
   createSyncObjects();
@@ -90,7 +91,8 @@ void Engine::createInstance() {
   // create instance
   vk::InstanceCreateInfo instanceInfo{
       .pNext = instance_info_p_next,
-      .flags = vk::InstanceCreateFlags() | vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR,
+      .flags = vk::InstanceCreateFlags() |
+               vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR,
       .pApplicationInfo = &appInfo,
       .enabledLayerCount = static_cast<uint32_t>(layers.size()),
       .ppEnabledLayerNames = layers.data(),
@@ -237,8 +239,7 @@ void Engine::createImageViews() {
 void Engine::createDevice() {
   // extension check
   std::vector<const char *> requiredDeviceExtensions = {
-      vk::KHRSwapchainExtensionName,
-      "VK_KHR_portability_subset"};
+      vk::KHRSwapchainExtensionName, "VK_KHR_portability_subset"};
   auto availableDeviceExtensions =
       physicalDevice.enumerateDeviceExtensionProperties();
   bool supportsAllRequiredExtensions = std::ranges::all_of(
@@ -341,7 +342,16 @@ void Engine::createPipeline() {
   };
   vk::PipelineShaderStageCreateInfo shaderStages[]{vertShaderStageCreateInfo,
                                                    fragShaderStageCreateInfo};
-  vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+  auto bindingDescriptions{Vertex::getBindingDescriptions()};
+  auto attributeDescriptions{Vertex::getAttributeDescriptions()};
+  vk::PipelineVertexInputStateCreateInfo vertexInputInfo{
+      // .vertexBindingDescriptionCount =
+      // static_cast<uint32_t>(bindingDescriptions.size()),
+      .vertexBindingDescriptionCount = 1,
+      .pVertexBindingDescriptions = &bindingDescriptions,
+      .vertexAttributeDescriptionCount =
+          static_cast<uint32_t>(attributeDescriptions.size()),
+      .pVertexAttributeDescriptions = attributeDescriptions.data()};
   vk::PipelineInputAssemblyStateCreateInfo inputAssemblyCreateInfo{
       .topology = vk::PrimitiveTopology::eTriangleList};
 
@@ -418,6 +428,42 @@ void Engine::createPipeline() {
   pipeline = vk::raii::Pipeline{
       device, nullptr,
       pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>()};
+}
+
+void Engine::createVertexBuffer() {
+  vk::BufferCreateInfo bufferInfo{.size = sizeof(vertices[0]) * vertices.size(),
+                                  .usage =
+                                      vk::BufferUsageFlagBits::eVertexBuffer,
+                                  .sharingMode = vk::SharingMode::eExclusive};
+  vertexBuffer = vk::raii::Buffer(device, bufferInfo);
+  vk::MemoryRequirements memoryRequirements =
+      vertexBuffer.getMemoryRequirements();
+  vk::PhysicalDeviceMemoryProperties memoryProperties =
+      physicalDevice.getMemoryProperties();
+  int64_t memoryTypeIndex{-1};
+  auto requiredMemoryProperties{vk::MemoryPropertyFlagBits::eHostVisible |
+                                vk::MemoryPropertyFlagBits::eHostCoherent};
+  for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++) {
+    if ((memoryRequirements.memoryTypeBits & (1 << i)) &&
+        (memoryProperties.memoryTypes[i].propertyFlags &
+         requiredMemoryProperties) == requiredMemoryProperties) {
+      memoryTypeIndex = i;
+      break;
+    }
+  }
+  if (memoryTypeIndex < 0) {
+    throw std::runtime_error(
+        "createVertexBuffer : no suitable memory type found");
+  }
+  vk::MemoryAllocateInfo memoryAllocateInfo{
+      .allocationSize = memoryRequirements.size,
+      .memoryTypeIndex = static_cast<uint32_t>(memoryTypeIndex)};
+
+  vertexBufferMemory = vk::raii::DeviceMemory{device, memoryAllocateInfo};
+  vertexBuffer.bindMemory(*vertexBufferMemory, 0);
+  void *data = vertexBufferMemory.mapMemory(0, bufferInfo.size);
+  memcpy(data, vertices.data(), bufferInfo.size);
+  vertexBufferMemory.unmapMemory();
 }
 
 void Engine::createCommandPool() {
@@ -529,20 +575,17 @@ void Engine::recordCommandBuffer(int imageIndex) {
       .pColorAttachments = &attachmentInfo};
 
   commandBuffer.beginRendering(renderingInfo);
-  commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
-
-  // drawing
   commandBuffer.setViewport(
       0, vk::Viewport(0.0f, 0.0f, static_cast<float>(extent.width),
                       static_cast<float>(extent.height), 0.0f, 1.0f));
   commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), extent));
-  const float offset[] = {1.0f * controller.xOffset,
-                          -1.0f * controller.yOffset};
-  commandBuffer.pushConstants<float>(
-      *pipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, offset);
-  commandBuffer.draw(3, 1, 0, 0);
+  commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
 
+  commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
+
+  commandBuffer.draw(static_cast<uint32_t>(vertices.size()), 1, 0, 0);
   commandBuffer.endRendering();
+
   transition_image_layout(imageIndex, vk::ImageLayout::eColorAttachmentOptimal,
                           vk::ImageLayout::ePresentSrcKHR,
                           vk::AccessFlagBits2::eColorAttachmentWrite, {},

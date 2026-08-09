@@ -3,7 +3,38 @@
 #include <GLFW/glfw3.h>
 #include <string>
 #define VULKAN_HPP_NO_CONSTRUCTORS
+#include <glm/glm.hpp>
 #include <vulkan/vulkan_raii.hpp>
+#include <array>
+#include <vector>
+
+struct Vertex {
+  glm::vec2 position;
+  glm::vec3 color;
+
+  static vk::VertexInputBindingDescription getBindingDescriptions() {
+    return {.binding = 0,
+            .stride = sizeof(Vertex),
+            .inputRate = vk::VertexInputRate::eVertex};
+  }
+
+  static std::array<vk::VertexInputAttributeDescription, 2>
+  getAttributeDescriptions() {
+    return {{{.location = 0,
+              .binding = 0,
+              .format = vk::Format::eR32G32Sfloat,
+              .offset = offsetof(Vertex, position)},
+             {.location = 1,
+              .binding = 0,
+              .format = vk::Format::eR32G32B32Sfloat,
+              .offset = offsetof(Vertex, color)}}};
+  }
+};
+const std::vector<Vertex> vertices = {
+    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+};
 
 struct Controller {
   float speed{1.0f};
@@ -30,6 +61,7 @@ struct Engine {
   void createSwapchain();
   void createImageViews();
   void createPipeline();
+  void createVertexBuffer();
   void createCommandPool();
   void createCommandBuffer();
   void createSyncObjects();
@@ -72,6 +104,8 @@ struct Engine {
   vk::SurfaceFormatKHR swapchainSurfaceFormat;
   vk::raii::Pipeline pipeline{nullptr};
   vk::raii::PipelineLayout pipelineLayout{nullptr};
+  vk::raii::Buffer vertexBuffer{nullptr};
+  vk::raii::DeviceMemory vertexBufferMemory{nullptr};
   vk::raii::CommandPool commandPool{nullptr};
   vk::raii::CommandBuffer commandBuffer{nullptr};
   std::vector<vk::raii::CommandBuffer> commandBuffers;

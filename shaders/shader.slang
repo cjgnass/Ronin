@@ -1,26 +1,22 @@
-static float2 positions[3] =
-    float2[](float2(0.0, -0.5), float2(0.5, 0.5), float2(-0.5, 0.5));
-
-static float3 colors[3] = float3[](float3(1.0, 0.0, 0.0), float3(1.0, 0.0, 0.0),
-                                   float3(1.0, 0.0, 0.0));
-
-struct VertexOutput {
+struct VertexInput { 
+  float2 position;
   float3 color;
-  float4 sv_position : SV_Position;
 };
 
-[[vk::push_constant]]
-cbuffer PushConstants { float2 offset; };
+struct VertexOutput {
+  float4 position : SV_Position;
+  float3 color;
+};
 
 [shader("vertex")]
-VertexOutput vertMain(uint vid: SV_VulkanVertexID) {
-  VertexOutput output;
-  output.color = colors[vid];
-  output.sv_position = float4(positions[vid] + offset, 0.0, 1.0);
-  return output;
+VertexOutput vertMain(VertexInput vertexInput) {
+  VertexOutput vertexOutput;
+  vertexOutput.position = float4(vertexInput.position, 0.0f, 1.0f);
+  vertexOutput.color = vertexInput.color;
+  return vertexOutput;
 }
 [shader("fragment")]
-float4 fragMain(VertexOutput inVert) : SV_Target {
-  float3 color = inVert.color;
+float4 fragMain(VertexOutput vertexOutput) : SV_Target {
+  float3 color = vertexOutput.color;
   return float4(color, 1.0);
 }
