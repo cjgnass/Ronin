@@ -41,9 +41,10 @@ void Engine::initVulkan() {
   createSwapchain();
   createImageViews();
   createPipeline();
-  createVertexBuffer();
   createCommandPool();
-  createCommandBuffer();
+  createVertexBuffer();
+  createIndexBuffer();
+  createCommandBuffers();
   createSyncObjects();
 }
 
@@ -435,22 +436,36 @@ void Engine::createPipeline() {
 }
 
 void Engine::createVertexBuffer() {
-  vk::BufferCreateInfo bufferInfo{.size = sizeof(vertices[0]) * vertices.size(),
-                                  .usage =
-                                      vk::BufferUsageFlagBits::eVertexBuffer,
-                                  .sharingMode = vk::SharingMode::eExclusive};
-  vertexBuffer = vk::raii::Buffer(device, bufferInfo);
-  vk::MemoryRequirements memoryRequirements =
-      vertexBuffer.getMemoryRequirements();
+  vk::DeviceSize bufferSize{sizeof(vertices[0]) * vertices.size()};
+  auto [stagingBuffer, stagingBufferMemory] =
+      createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                   vk::MemoryPropertyFlagBits::eHostVisible |
+                       vk::MemoryPropertyFlagBits::eHostCoherent);
+  void *dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+  memcpy(dataStaging, vertices.data(), bufferSize);
+  stagingBufferMemory.unmapMemory();
+  std::tie(vertexBuffer, vertexBufferMemory) =
+      createBuffer(bufferSize,
+                   vk::BufferUsageFlagBits::eVertexBuffer |
+                       vk::BufferUsageFlagBits::eTransferDst,
+                   vk::MemoryPropertyFlagBits::eDeviceLocal);
+  copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+}
+
+std::pair<vk::raii::Buffer, vk::raii::DeviceMemory>
+Engine::createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
+                     vk::MemoryPropertyFlags properties) {
+  vk::BufferCreateInfo bufferInfo{
+      .size = size, .usage = usage, .sharingMode = vk::SharingMode::eExclusive};
+  vk::raii::Buffer buffer{vk::raii::Buffer(device, bufferInfo)};
+  vk::MemoryRequirements memoryRequirements = buffer.getMemoryRequirements();
   vk::PhysicalDeviceMemoryProperties memoryProperties =
       physicalDevice.getMemoryProperties();
   int64_t memoryTypeIndex{-1};
-  auto requiredMemoryProperties{vk::MemoryPropertyFlagBits::eHostVisible |
-                                vk::MemoryPropertyFlagBits::eHostCoherent};
   for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++) {
     if ((memoryRequirements.memoryTypeBits & (1 << i)) &&
-        (memoryProperties.memoryTypes[i].propertyFlags &
-         requiredMemoryProperties) == requiredMemoryProperties) {
+        (memoryProperties.memoryTypes[i].propertyFlags & properties) ==
+            properties) {
       memoryTypeIndex = i;
       break;
     }
@@ -463,11 +478,50 @@ void Engine::createVertexBuffer() {
       .allocationSize = memoryRequirements.size,
       .memoryTypeIndex = static_cast<uint32_t>(memoryTypeIndex)};
 
-  vertexBufferMemory = vk::raii::DeviceMemory{device, memoryAllocateInfo};
-  vertexBuffer.bindMemory(*vertexBufferMemory, 0);
-  void *data = vertexBufferMemory.mapMemory(0, bufferInfo.size);
-  memcpy(data, vertices.data(), bufferInfo.size);
-  vertexBufferMemory.unmapMemory();
+  auto bufferMemory{vk::raii::DeviceMemory{device, memoryAllocateInfo}};
+  buffer.bindMemory(*bufferMemory, 0);
+  return {std::move(buffer), std::move(bufferMemory)};
+}
+
+void Engine::copyBuffer(vk::raii::Buffer &srcBuffer,
+                        vk::raii::Buffer &dstBuffer, vk::DeviceSize size) {
+
+  vk::CommandBufferAllocateInfo allocInfo{.commandPool = commandPool,
+                                          .level =
+                                              vk::CommandBufferLevel::ePrimary,
+                                          .commandBufferCount = 1};
+  vk::raii::CommandBuffer commandCopyBuffer =
+      std::move(device.allocateCommandBuffers(allocInfo).front());
+  commandCopyBuffer.begin(
+      {.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+  commandCopyBuffer.copyBuffer(srcBuffer, dstBuffer,
+                               vk::BufferCopy(0, 0, size));
+  commandCopyBuffer.end();
+  queue.submit(vk::SubmitInfo{.commandBufferCount = 1,
+                              .pCommandBuffers = &*commandCopyBuffer},
+               nullptr);
+  queue.waitIdle();
+}
+
+void Engine::createIndexBuffer() {
+  vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+
+  auto [stagingBuffer, stagingBufferMemory] =
+      createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                   vk::MemoryPropertyFlagBits::eHostVisible |
+                       vk::MemoryPropertyFlagBits::eHostCoherent);
+
+  void *data = stagingBufferMemory.mapMemory(0, bufferSize);
+  memcpy(data, indices.data(), (size_t)bufferSize);
+  stagingBufferMemory.unmapMemory();
+
+  std::tie(indexBuffer, indexBufferMemory) =
+      createBuffer(bufferSize,
+                   vk::BufferUsageFlagBits::eIndexBuffer |
+                       vk::BufferUsageFlagBits::eTransferDst,
+                   vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+  copyBuffer(stagingBuffer, indexBuffer, bufferSize);
 }
 
 void Engine::createCommandPool() {
@@ -477,22 +531,25 @@ void Engine::createCommandPool() {
   commandPool = vk::raii::CommandPool{device, commandPoolCreateInfo};
 }
 
-void Engine::createCommandBuffer() {
+void Engine::createCommandBuffers() {
   vk::CommandBufferAllocateInfo allocInfo{
       .commandPool = commandPool,
       .level = vk::CommandBufferLevel::ePrimary,
       .commandBufferCount = MAX_FRAMES_IN_FLIGHT};
   commandBuffers = vk::raii::CommandBuffers(device, allocInfo);
-  commandBuffer = std::move(commandBuffers.front());
 }
 
 void Engine::createSyncObjects() {
-  presentCompleteSemaphore =
-      vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
-  renderFinishedSemaphore =
-      vk::raii::Semaphore(device, vk::SemaphoreCreateInfo());
-  drawFence =
-      vk::raii::Fence(device, {.flags = vk::FenceCreateFlagBits::eSignaled});
+  for (size_t i = 0; i < images.size(); i++) {
+    renderFinishedSemaphores.emplace_back(device, vk::SemaphoreCreateInfo());
+  }
+
+  for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+    presentCompleteSemaphores.emplace_back(device, vk::SemaphoreCreateInfo());
+    inFlightFences.emplace_back(
+        device,
+        vk::FenceCreateInfo{.flags = vk::FenceCreateFlagBits::eSignaled});
+  }
 }
 
 void Engine::createController() { controller = Controller{}; }
@@ -519,32 +576,33 @@ void Engine::mainLoop() {
 }
 
 void Engine::drawFrame() {
-  auto fenceResult = device.waitForFences(*drawFence, vk::True, UINT64_MAX);
+  auto fenceResult =
+      device.waitForFences(*inFlightFences[frameIndex], vk::True, UINT64_MAX);
   if (fenceResult != vk::Result::eSuccess) {
     throw std::runtime_error("failed to wait for fence!");
   }
-  device.resetFences(*drawFence);
   auto [result, imageIndex] = swapchain.acquireNextImage(
-      UINT64_MAX, *presentCompleteSemaphore, nullptr);
-  queue.waitIdle();
+      UINT64_MAX, *presentCompleteSemaphores[frameIndex], nullptr);
+  device.resetFences(*inFlightFences[frameIndex]);
+  commandBuffers[frameIndex].reset();
+  recordCommandBuffer(imageIndex);
   vk::PipelineStageFlags waitDestinationStageMask(
       vk::PipelineStageFlagBits::eColorAttachmentOutput);
   const vk::SubmitInfo submitInfo{
       .waitSemaphoreCount = 1,
-      .pWaitSemaphores = &*presentCompleteSemaphore,
+      .pWaitSemaphores = &*presentCompleteSemaphores[frameIndex],
       .pWaitDstStageMask = &waitDestinationStageMask,
       .commandBufferCount = 1,
-      .pCommandBuffers = &*commandBuffer,
+      .pCommandBuffers = &*commandBuffers[frameIndex],
       .signalSemaphoreCount = 1,
-      .pSignalSemaphores = &*renderFinishedSemaphore};
-  recordCommandBuffer(imageIndex);
-  queue.submit(submitInfo, *drawFence);
-  const vk::PresentInfoKHR presentInfoKHR{.waitSemaphoreCount = 1,
-                                          .pWaitSemaphores =
-                                              &*renderFinishedSemaphore,
-                                          .swapchainCount = 1,
-                                          .pSwapchains = &*swapchain,
-                                          .pImageIndices = &imageIndex};
+      .pSignalSemaphores = &*renderFinishedSemaphores[imageIndex]};
+  queue.submit(submitInfo, *inFlightFences[frameIndex]);
+  const vk::PresentInfoKHR presentInfoKHR{
+      .waitSemaphoreCount = 1,
+      .pWaitSemaphores = &*renderFinishedSemaphores[imageIndex],
+      .swapchainCount = 1,
+      .pSwapchains = &*swapchain,
+      .pImageIndices = &imageIndex};
   result = queue.presentKHR(presentInfoKHR);
   switch (result) {
   case vk::Result::eSuccess:
@@ -556,9 +614,12 @@ void Engine::drawFrame() {
   default:
     break; // an unexpected result is returned!
   }
+  frameIndex = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 void Engine::recordCommandBuffer(int imageIndex) {
+
+  auto &commandBuffer{commandBuffers[frameIndex]};
   commandBuffer.begin({});
   transition_image_layout(imageIndex, vk::ImageLayout::eUndefined,
                           vk::ImageLayout::eColorAttachmentOptimal, {},
@@ -579,15 +640,17 @@ void Engine::recordCommandBuffer(int imageIndex) {
       .pColorAttachments = &attachmentInfo};
 
   commandBuffer.beginRendering(renderingInfo);
+  commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
   commandBuffer.setViewport(
       0, vk::Viewport(0.0f, 0.0f, static_cast<float>(extent.width),
                       static_cast<float>(extent.height), 0.0f, 1.0f));
   commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), extent));
-  commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
-
   commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
-
-  commandBuffer.draw(static_cast<uint32_t>(vertices.size()), 1, 0, 0);
+  commandBuffer.bindIndexBuffer(
+      *indexBuffer, 0,
+      vk::IndexTypeValue<decltype(indices)::value_type>::value);
+  commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+  // commandBuffer.draw(static_cast<uint32_t>(vertices.size()), 1, 0, 0);
   commandBuffer.endRendering();
 
   transition_image_layout(imageIndex, vk::ImageLayout::eColorAttachmentOptimal,
@@ -623,7 +686,7 @@ void Engine::transition_image_layout(uint32_t imageIndex,
   vk::DependencyInfo dependency_info = {.dependencyFlags = {},
                                         .imageMemoryBarrierCount = 1,
                                         .pImageMemoryBarriers = &barrier};
-  commandBuffer.pipelineBarrier2(dependency_info);
+  commandBuffers[frameIndex].pipelineBarrier2(dependency_info);
 }
 
 void Engine::cleanup() {

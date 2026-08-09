@@ -3,10 +3,12 @@
 #include <GLFW/glfw3.h>
 #include <string>
 #define VULKAN_HPP_NO_CONSTRUCTORS
-#include <glm/glm.hpp>
-#include <vulkan/vulkan_raii.hpp>
 #include <array>
+#include <glm/glm.hpp>
 #include <vector>
+#include <vulkan/vulkan_raii.hpp>
+
+constexpr uint32_t MAX_FRAMES_IN_FLIGHT{2};
 
 struct Vertex {
   glm::vec2 position;
@@ -30,11 +32,12 @@ struct Vertex {
               .offset = offsetof(Vertex, color)}}};
   }
 };
-const std::vector<Vertex> vertices = {
-    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
-};
+const std::vector<Vertex> vertices = {{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+                                      {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+                                      {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+                                      {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}};
+
+const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0};
 
 struct Controller {
   float speed{1.0f};
@@ -61,9 +64,15 @@ struct Engine {
   void createSwapchain();
   void createImageViews();
   void createPipeline();
-  void createVertexBuffer();
   void createCommandPool();
-  void createCommandBuffer();
+  void createVertexBuffer();
+  std::pair<vk::raii::Buffer, vk::raii::DeviceMemory>
+  createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
+               vk::MemoryPropertyFlags properties);
+  void copyBuffer(vk::raii::Buffer &srcBuffer, vk::raii::Buffer &dstBuffer,
+                  vk::DeviceSize size);
+  void createIndexBuffer();
+  void createCommandBuffers();
   void createSyncObjects();
 
   void createController();
@@ -80,7 +89,7 @@ struct Engine {
 
   void cleanup();
 
-  uint32_t MAX_FRAMES_IN_FLIGHT{2};
+  uint32_t frameIndex{0};
 
   int width;
   int height;
@@ -106,13 +115,11 @@ struct Engine {
   vk::raii::PipelineLayout pipelineLayout{nullptr};
   vk::raii::Buffer vertexBuffer{nullptr};
   vk::raii::DeviceMemory vertexBufferMemory{nullptr};
+  vk::raii::Buffer indexBuffer{nullptr};
+  vk::raii::DeviceMemory indexBufferMemory{nullptr};
   vk::raii::CommandPool commandPool{nullptr};
-  vk::raii::CommandBuffer commandBuffer{nullptr};
   std::vector<vk::raii::CommandBuffer> commandBuffers;
-  vk::raii::Semaphore presentCompleteSemaphore{nullptr};
-  vk::raii::Semaphore renderFinishedSemaphore{nullptr};
   std::vector<vk::raii::Semaphore> presentCompleteSemaphores;
   std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
-  vk::raii::Fence drawFence{nullptr};
   std::vector<vk::raii::Fence> inFlightFences;
 };
