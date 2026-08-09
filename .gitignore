@@ -3,3 +3,4 @@ debug-build/
 .zed/
 .cache/
 .idea/
+compile_commands.json
