@@ -1,4 +1,12 @@
-struct VertexInput { 
+struct UniformBufferObject {
+  float4x4 model;
+  float4x4 view;
+  float4x4 projection;
+};
+
+ConstantBuffer<UniformBufferObject> ubo;
+
+struct VertexInput {
   float2 position;
   float3 color;
 };
@@ -11,7 +19,9 @@ struct VertexOutput {
 [shader("vertex")]
 VertexOutput vertMain(VertexInput vertexInput) {
   VertexOutput vertexOutput;
-  vertexOutput.position = float4(vertexInput.position, 0.0f, 1.0f);
+  vertexOutput.position = mul(
+      ubo.projection,
+      mul(ubo.view, mul(ubo.model, float4(vertexInput.position, 0.0f, 1.0f))));
   vertexOutput.color = vertexInput.color;
   return vertexOutput;
 }

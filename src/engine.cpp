@@ -40,10 +40,14 @@ void Engine::initVulkan() {
   createDevice();
   createSwapchain();
   createImageViews();
+  createDescriptorSetLayout();
   createPipeline();
   createCommandPool();
   createVertexBuffer();
   createIndexBuffer();
+  createUniformBuffers();
+  createDescriptorPool();
+  createDescriptorSets();
   createCommandBuffers();
   createSyncObjects();
 }
@@ -318,6 +322,17 @@ void Engine::createDevice() {
   queue = vk::raii::Queue{device, queueIndex, 0};
 }
 
+void Engine::createDescriptorSetLayout() {
+  vk::DescriptorSetLayoutBinding uboLayoutBinding{
+      .binding = 0,
+      .descriptorType = vk::DescriptorType::eUniformBuffer,
+      .descriptorCount = 1,
+      .stageFlags = vk::ShaderStageFlagBits::eVertex};
+  vk::DescriptorSetLayoutCreateInfo layoutInfo{.bindingCount = 1,
+                                               .pBindings = &uboLayoutBinding};
+  descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
+}
+
 void Engine::createPipeline() {
   // read shader file
   std::ifstream shaderFile("./build/shaders/shader.spv",
@@ -376,7 +391,7 @@ void Engine::createPipeline() {
       .depthClampEnable = vk::False,
       .rasterizerDiscardEnable = vk::False,
       .polygonMode = vk::PolygonMode::eFill,
-      .cullMode = vk::CullModeFlagBits::eBack,
+      .cullMode = vk::CullModeFlagBits::eNone,
       .frontFace = vk::FrontFace::eClockwise,
       .depthBiasEnable = vk::False,
       .lineWidth = 1.0f};
@@ -399,15 +414,11 @@ void Engine::createPipeline() {
       .logicOp = vk::LogicOp::eCopy,
       .attachmentCount = 1,
       .pAttachments = &colorBlendAttachment};
-  vk::PushConstantRange pushConstantRange{
-      .stageFlags = vk::ShaderStageFlagBits::eVertex,
-      .offset = 0,
-      .size = sizeof(float) * 2,
+  vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
+      .setLayoutCount = 1,
+      .pSetLayouts = &*descriptorSetLayout,
+      .pushConstantRangeCount = 0,
   };
-  vk::PipelineLayoutCreateInfo pipelineLayoutInfo{.setLayoutCount = 0,
-                                                  .pushConstantRangeCount = 1,
-                                                  .pPushConstantRanges =
-                                                      &pushConstantRange};
   pipelineLayout = vk::raii::PipelineLayout{device, pipelineLayoutInfo};
   std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport,
                                                  vk::DynamicState::eScissor};
@@ -524,6 +535,56 @@ void Engine::createIndexBuffer() {
   copyBuffer(stagingBuffer, indexBuffer, bufferSize);
 }
 
+void Engine::createUniformBuffers() {
+  for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+    vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
+    auto [buffer, bufferMem] =
+        createBuffer(bufferSize, vk::BufferUsageFlagBits::eUniformBuffer,
+                     vk::MemoryPropertyFlagBits::eHostVisible |
+                         vk::MemoryPropertyFlagBits::eHostCoherent);
+    uniformBuffers.emplace_back(std::move(buffer));
+    uniformBuffersMemory.emplace_back(std::move(bufferMem));
+    uniformBuffersMapped.emplace_back(
+        uniformBuffersMemory.back().mapMemory(0, bufferSize));
+  }
+}
+
+void Engine::createDescriptorPool() {
+  vk::DescriptorPoolSize poolSize{.type = vk::DescriptorType::eUniformBuffer,
+                                  .descriptorCount = MAX_FRAMES_IN_FLIGHT};
+  vk::DescriptorPoolCreateInfo poolInfo{
+      .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+      .maxSets = MAX_FRAMES_IN_FLIGHT,
+      .poolSizeCount = 1,
+      .pPoolSizes = &poolSize};
+  descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
+}
+
+void Engine::createDescriptorSets() {
+  std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
+                                               *descriptorSetLayout);
+  vk::DescriptorSetAllocateInfo allocInfo{
+      .descriptorPool = descriptorPool,
+      .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+      .pSetLayouts = layouts.data()};
+
+  descriptorSets = device.allocateDescriptorSets(allocInfo);
+
+  for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+    vk::DescriptorBufferInfo bufferInfo{.buffer = uniformBuffers[i],
+                                        .offset = 0,
+                                        .range = sizeof(UniformBufferObject)};
+    vk::WriteDescriptorSet descriptorWrite{
+        .dstSet = descriptorSets[i],
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorCount = 1,
+        .descriptorType = vk::DescriptorType::eUniformBuffer,
+        .pBufferInfo = &bufferInfo};
+    device.updateDescriptorSets(descriptorWrite, {});
+  }
+}
+
 void Engine::createCommandPool() {
   vk::CommandPoolCreateInfo commandPoolCreateInfo{
       .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
@@ -584,6 +645,7 @@ void Engine::drawFrame() {
   auto [result, imageIndex] = swapchain.acquireNextImage(
       UINT64_MAX, *presentCompleteSemaphores[frameIndex], nullptr);
   device.resetFences(*inFlightFences[frameIndex]);
+  updateUniformBuffer(frameIndex);
   commandBuffers[frameIndex].reset();
   recordCommandBuffer(imageIndex);
   vk::PipelineStageFlags waitDestinationStageMask(
@@ -615,6 +677,25 @@ void Engine::drawFrame() {
     break; // an unexpected result is returned!
   }
   frameIndex = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
+}
+
+void Engine::updateUniformBuffer(uint32_t currentImageIndex) {
+  static auto startTime = std::chrono::high_resolution_clock::now();
+
+  auto currentTime = std::chrono::high_resolution_clock::now();
+  float time = std::chrono::duration<float>(currentTime - startTime).count();
+
+  UniformBufferObject ubo{};
+  ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f),
+                     glm::vec3(0.0f, 0.0f, 1.0f));
+  ubo.view = lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f),
+                    glm::vec3(0.0f, 0.0f, 1.0f));
+  ubo.projection = glm::perspective(glm::radians(45.0f),
+                                    static_cast<float>(extent.width) /
+                                        static_cast<float>(extent.height),
+                                    0.1f, 10.0f);
+  ubo.projection[1][1] *= -1;
+  memcpy(uniformBuffersMapped[currentImageIndex], &ubo, sizeof(ubo));
 }
 
 void Engine::recordCommandBuffer(int imageIndex) {
@@ -649,8 +730,10 @@ void Engine::recordCommandBuffer(int imageIndex) {
   commandBuffer.bindIndexBuffer(
       *indexBuffer, 0,
       vk::IndexTypeValue<decltype(indices)::value_type>::value);
+  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                   pipelineLayout, 0,
+                                   *descriptorSets[frameIndex], nullptr);
   commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
-  // commandBuffer.draw(static_cast<uint32_t>(vertices.size()), 1, 0, 0);
   commandBuffer.endRendering();
 
   transition_image_layout(imageIndex, vk::ImageLayout::eColorAttachmentOptimal,

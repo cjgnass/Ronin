@@ -4,11 +4,19 @@
 #include <string>
 #define VULKAN_HPP_NO_CONSTRUCTORS
 #include <array>
+#define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include <vulkan/vulkan_raii.hpp>
 
 constexpr uint32_t MAX_FRAMES_IN_FLIGHT{2};
+
+struct UniformBufferObject {
+  glm::mat4 model;
+  glm::mat4 view;
+  glm::mat4 projection;
+};
 
 struct Vertex {
   glm::vec2 position;
@@ -63,6 +71,7 @@ struct Engine {
   void createDevice();
   void createSwapchain();
   void createImageViews();
+  void createDescriptorSetLayout();
   void createPipeline();
   void createCommandPool();
   void createVertexBuffer();
@@ -72,6 +81,9 @@ struct Engine {
   void copyBuffer(vk::raii::Buffer &srcBuffer, vk::raii::Buffer &dstBuffer,
                   vk::DeviceSize size);
   void createIndexBuffer();
+  void createUniformBuffers();
+  void createDescriptorPool();
+  void createDescriptorSets();
   void createCommandBuffers();
   void createSyncObjects();
 
@@ -79,6 +91,7 @@ struct Engine {
 
   void mainLoop();
   void drawFrame();
+  void updateUniformBuffer(uint32_t currentImageIndex);
   void recordCommandBuffer(int imageIndex);
   void transition_image_layout(uint32_t imageIndex, vk::ImageLayout old_layout,
                                vk::ImageLayout new_layout,
@@ -111,6 +124,12 @@ struct Engine {
   uint32_t queueIndex{};
   vk::raii::SwapchainKHR swapchain{nullptr};
   vk::SurfaceFormatKHR swapchainSurfaceFormat;
+  vk::raii::DescriptorSetLayout descriptorSetLayout{nullptr};
+  std::vector<vk::raii::Buffer> uniformBuffers;
+  std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
+  std::vector<void *> uniformBuffersMapped;
+  vk::raii::DescriptorPool descriptorPool{nullptr};
+  std::vector<vk::raii::DescriptorSet> descriptorSets;
   vk::raii::Pipeline pipeline{nullptr};
   vk::raii::PipelineLayout pipelineLayout{nullptr};
   vk::raii::Buffer vertexBuffer{nullptr};
