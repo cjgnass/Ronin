@@ -239,7 +239,11 @@ void Engine::createImageViews() {
 void Engine::createDevice() {
   // extension check
   std::vector<const char *> requiredDeviceExtensions = {
-      vk::KHRSwapchainExtensionName, "VK_KHR_portability_subset"};
+      vk::KHRSwapchainExtensionName,
+  };
+#if defined(__APPLE__)
+  requiredDeviceExtensions.push_back("VK_KHR_portability_subset");
+#endif
   auto availableDeviceExtensions =
       physicalDevice.enumerateDeviceExtensionProperties();
   bool supportsAllRequiredExtensions = std::ranges::all_of(
