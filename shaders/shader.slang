@@ -9,12 +9,16 @@ ConstantBuffer<UniformBufferObject> ubo;
 struct VertexInput {
   float2 position;
   float3 color;
+  float2 texCoord;
 };
 
 struct VertexOutput {
   float4 position : SV_Position;
   float3 color;
+  float2 texCoord;
 };
+
+Sampler2D texture;
 
 [shader("vertex")]
 VertexOutput vertMain(VertexInput vertexInput) {
@@ -23,10 +27,10 @@ VertexOutput vertMain(VertexInput vertexInput) {
       ubo.projection,
       mul(ubo.view, mul(ubo.model, float4(vertexInput.position, 0.0f, 1.0f))));
   vertexOutput.color = vertexInput.color;
+  vertexOutput.texCoord = vertexInput.texCoord;
   return vertexOutput;
 }
 [shader("fragment")]
 float4 fragMain(VertexOutput vertexOutput) : SV_Target {
-  float3 color = vertexOutput.color;
-  return float4(color, 1.0);
+  return texture.Sample(vertexOutput.texCoord);
 }

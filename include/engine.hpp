@@ -21,6 +21,7 @@ struct UniformBufferObject {
 struct Vertex {
   glm::vec2 position;
   glm::vec3 color;
+  glm::vec2 texCoord;
 
   static vk::VertexInputBindingDescription getBindingDescriptions() {
     return {.binding = 0,
@@ -28,7 +29,7 @@ struct Vertex {
             .inputRate = vk::VertexInputRate::eVertex};
   }
 
-  static std::array<vk::VertexInputAttributeDescription, 2>
+  static std::array<vk::VertexInputAttributeDescription, 3>
   getAttributeDescriptions() {
     return {{{.location = 0,
               .binding = 0,
@@ -37,13 +38,19 @@ struct Vertex {
              {.location = 1,
               .binding = 0,
               .format = vk::Format::eR32G32B32Sfloat,
-              .offset = offsetof(Vertex, color)}}};
+              .offset = offsetof(Vertex, color)},
+             {.location = 2,
+              .binding = 0,
+              .format = vk::Format::eR32G32Sfloat,
+              .offset = offsetof(Vertex, texCoord)}}};
   }
 };
-const std::vector<Vertex> vertices = {{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-                                      {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-                                      {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-                                      {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}};
+
+const std::vector<Vertex> vertices = {
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}};
 
 const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0};
 
@@ -74,12 +81,32 @@ struct Engine {
   void createDescriptorSetLayout();
   void createPipeline();
   void createCommandPool();
+  void createTextureImage();
+  void transitionImageLayout(vk::raii::CommandBuffer &commandBuffer,
+                             const vk::raii::Image &image,
+                             vk::ImageLayout oldLayout,
+                             vk::ImageLayout newLayout);
+  std::pair<vk::raii::Image, vk::raii::DeviceMemory>
+  createImage(uint32_t width, uint32_t height, vk::Format format,
+              vk::ImageTiling tiling, vk::ImageUsageFlags usage,
+              vk::MemoryPropertyFlags properties);
+  vk::raii::ImageView createImageView(vk::Image const &image,
+                                      vk::Format format);
+  void createTextureImageView();
+  void createTextureSampler();
   void createVertexBuffer();
   std::pair<vk::raii::Buffer, vk::raii::DeviceMemory>
   createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
                vk::MemoryPropertyFlags properties);
+  uint32_t findMemoryTypeIndex(uint32_t typeFilter,
+                               vk::MemoryPropertyFlags properties);
   void copyBuffer(vk::raii::Buffer &srcBuffer, vk::raii::Buffer &dstBuffer,
                   vk::DeviceSize size);
+  vk::raii::CommandBuffer beginSingleTimeCommands();
+  void endSingleTimeCommands(vk::raii::CommandBuffer &&commandBuffer);
+  void copyBufferToImage(vk::raii::CommandBuffer &commandBuffer,
+                         const vk::raii::Buffer &buffer, vk::raii::Image &image,
+                         uint32_t width, uint32_t height);
   void createIndexBuffer();
   void createUniformBuffers();
   void createDescriptorPool();
@@ -137,6 +164,10 @@ struct Engine {
   vk::raii::Buffer indexBuffer{nullptr};
   vk::raii::DeviceMemory indexBufferMemory{nullptr};
   vk::raii::CommandPool commandPool{nullptr};
+  vk::raii::Image textureImage{nullptr};
+  vk::raii::DeviceMemory textureImageMemory{nullptr};
+  vk::raii::ImageView textureImageView{nullptr};
+  vk::raii::Sampler textureSampler{nullptr};
   std::vector<vk::raii::CommandBuffer> commandBuffers;
   std::vector<vk::raii::Semaphore> presentCompleteSemaphores;
   std::vector<vk::raii::Semaphore> renderFinishedSemaphores;

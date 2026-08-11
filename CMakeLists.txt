@@ -11,6 +11,7 @@ target_include_directories(main PUBLIC include)
 if (APPLE)
   target_include_directories(main PRIVATE /opt/homebrew/include/glm)
 endif()
+target_include_directories(main PRIVATE vendor/stb)
 
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
