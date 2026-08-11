@@ -7,7 +7,7 @@ struct UniformBufferObject {
 ConstantBuffer<UniformBufferObject> ubo;
 
 struct VertexInput {
-  float2 position;
+  float3 position;
   float3 color;
   float2 texCoord;
 };
@@ -25,7 +25,7 @@ VertexOutput vertMain(VertexInput vertexInput) {
   VertexOutput vertexOutput;
   vertexOutput.position = mul(
       ubo.projection,
-      mul(ubo.view, mul(ubo.model, float4(vertexInput.position, 0.0f, 1.0f))));
+      mul(ubo.view, mul(ubo.model, float4(vertexInput.position, 1.0f))));
   vertexOutput.color = vertexInput.color;
   vertexOutput.texCoord = vertexInput.texCoord;
   return vertexOutput;

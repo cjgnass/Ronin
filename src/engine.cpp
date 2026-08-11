@@ -45,6 +45,7 @@ void Engine::initVulkan() {
   createDescriptorSetLayout();
   createPipeline();
   createCommandPool();
+  createDepthResources();
   createTextureImage();
   createTextureImageView();
   createTextureSampler();
@@ -242,7 +243,8 @@ void Engine::createImageViews() {
                                           .layerCount = 1};
   for (auto &image : images) {
     imageViewCreateInfo.image = image;
-    imageViews.emplace_back(device, imageViewCreateInfo);
+    imageViews.emplace_back(createImageView(
+        image, swapchainSurfaceFormat.format, vk::ImageAspectFlagBits::eColor));
   }
 }
 
@@ -435,6 +437,12 @@ void Engine::createPipeline() {
   vk::PipelineDynamicStateCreateInfo dynamicState{
       .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
       .pDynamicStates = dynamicStates.data()};
+  vk::PipelineDepthStencilStateCreateInfo depthStencil{
+      .depthTestEnable = vk::True,
+      .depthWriteEnable = vk::True,
+      .depthCompareOp = vk::CompareOp::eLess,
+      .depthBoundsTestEnable = vk::False,
+      .stencilTestEnable = vk::False};
   vk::StructureChain<vk::GraphicsPipelineCreateInfo,
                      vk::PipelineRenderingCreateInfo>
       pipelineCreateInfoChain = {
@@ -445,12 +453,18 @@ void Engine::createPipeline() {
            .pViewportState = &viewportStateCreateInfo,
            .pRasterizationState = &rasterizerCreateInfo,
            .pMultisampleState = &multisamplingCreateInfo,
+           .pDepthStencilState = &depthStencil,
            .pColorBlendState = &colorBlending,
            .pDynamicState = &dynamicState,
            .layout = pipelineLayout,
            .renderPass = nullptr},
           {.colorAttachmentCount = 1,
-           .pColorAttachmentFormats = &swapchainSurfaceFormat.format}};
+           .pColorAttachmentFormats = &swapchainSurfaceFormat.format,
+           .depthAttachmentFormat = findSupportedFormat(
+               {vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint,
+                vk::Format::eD24UnormS8Uint},
+               vk::ImageTiling::eOptimal,
+               vk::FormatFeatureFlagBits::eDepthStencilAttachment)}};
   pipeline = vk::raii::Pipeline{
       device, nullptr,
       pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>()};
@@ -623,6 +637,38 @@ void Engine::createCommandPool() {
   commandPool = vk::raii::CommandPool{device, commandPoolCreateInfo};
 }
 
+void Engine::createDepthResources() {
+  vk::Format depthFormat =
+      findSupportedFormat({vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint,
+                           vk::Format::eD24UnormS8Uint},
+                          vk::ImageTiling::eOptimal,
+                          vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+  std::tie(depthImage, depthImageMemory) = createImage(
+      extent.width, extent.height, depthFormat, vk::ImageTiling::eOptimal,
+      vk::ImageUsageFlagBits::eDepthStencilAttachment,
+      vk::MemoryPropertyFlagBits::eDeviceLocal);
+  depthImageView =
+      createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
+}
+
+vk::Format
+Engine::findSupportedFormat(const std::vector<vk::Format> &candidates,
+                            vk::ImageTiling tiling,
+                            vk::FormatFeatureFlags features) {
+  for (const auto format : candidates) {
+    vk::FormatProperties props = physicalDevice.getFormatProperties(format);
+
+    if (((tiling == vk::ImageTiling::eLinear) &&
+         ((props.linearTilingFeatures & features) == features)) ||
+        ((tiling == vk::ImageTiling::eOptimal) &&
+         ((props.optimalTilingFeatures & features) == features))) {
+      return format;
+    }
+  }
+
+  throw std::runtime_error("failed to find supported format!");
+}
+
 void Engine::createTextureImage() {
   int texWidth, texHeight, texChannels;
   stbi_uc *pixels = stbi_load("textures/pog.jpg", &texWidth, &texHeight,
@@ -762,16 +808,18 @@ Engine::createImage(uint32_t width, uint32_t height, vk::Format format,
 }
 
 void Engine::createTextureImageView() {
-  textureImageView = createImageView(*textureImage, vk::Format::eR8G8B8A8Srgb);
+  textureImageView = createImageView(*textureImage, vk::Format::eR8G8B8A8Srgb,
+                                     vk::ImageAspectFlagBits::eColor);
 }
 
 vk::raii::ImageView Engine::createImageView(vk::Image const &image,
-                                            vk::Format format) {
+                                            vk::Format format,
+                                            vk::ImageAspectFlags aspectFlags) {
   vk::ImageViewCreateInfo viewInfo{
       .image = image,
       .viewType = vk::ImageViewType::e2D,
       .format = format,
-      .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor,
+      .subresourceRange = {.aspectMask = aspectFlags,
                            .baseMipLevel = 0,
                            .levelCount = 1,
                            .baseArrayLayer = 0,
@@ -907,12 +955,35 @@ void Engine::recordCommandBuffer(int imageIndex) {
 
   auto &commandBuffer{commandBuffers[frameIndex]};
   commandBuffer.begin({});
-  transition_image_layout(imageIndex, vk::ImageLayout::eUndefined,
+  transition_image_layout(images[imageIndex], vk::ImageLayout::eUndefined,
                           vk::ImageLayout::eColorAttachmentOptimal, {},
                           vk::AccessFlagBits2::eColorAttachmentWrite,
                           vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                          vk::PipelineStageFlagBits2::eColorAttachmentOutput);
-  vk::ClearValue clearColor = vk::ClearValue{};
+                          vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                          vk::ImageAspectFlagBits::eColor);
+  transition_image_layout(*depthImage, vk::ImageLayout::eUndefined,
+                          vk::ImageLayout::eDepthAttachmentOptimal,
+                          vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+                          vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+                          vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                              vk::PipelineStageFlagBits2::eLateFragmentTests,
+                          vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                              vk::PipelineStageFlagBits2::eLateFragmentTests,
+                          vk::ImageAspectFlagBits::eDepth);
+  vk::ClearValue clearColor{};
+  vk::ClearValue clearDepth{
+      .depthStencil =
+          vk::ClearDepthStencilValue{
+              .depth = 1.0f,
+              .stencil = 0,
+          },
+  };
+  vk::RenderingAttachmentInfo depthAttachmentInfo = {
+      .imageView = depthImageView,
+      .imageLayout = vk::ImageLayout::eDepthAttachmentOptimal,
+      .loadOp = vk::AttachmentLoadOp::eClear,
+      .storeOp = vk::AttachmentStoreOp::eDontCare,
+      .clearValue = clearDepth};
   vk::RenderingAttachmentInfo attachmentInfo = {
       .imageView = imageViews[imageIndex],
       .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
@@ -923,7 +994,8 @@ void Engine::recordCommandBuffer(int imageIndex) {
       .renderArea = {.offset = {0, 0}, .extent = extent},
       .layerCount = 1,
       .colorAttachmentCount = 1,
-      .pColorAttachments = &attachmentInfo};
+      .pColorAttachments = &attachmentInfo,
+      .pDepthAttachment = &depthAttachmentInfo};
 
   commandBuffer.beginRendering(renderingInfo);
   commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
@@ -940,22 +1012,25 @@ void Engine::recordCommandBuffer(int imageIndex) {
                                    *descriptorSets[frameIndex], nullptr);
   commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
   commandBuffer.endRendering();
-
-  transition_image_layout(imageIndex, vk::ImageLayout::eColorAttachmentOptimal,
-                          vk::ImageLayout::ePresentSrcKHR,
-                          vk::AccessFlagBits2::eColorAttachmentWrite, {},
-                          vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                          vk::PipelineStageFlagBits2::eBottomOfPipe);
+  transition_image_layout(
+      images[imageIndex], vk::ImageLayout::eColorAttachmentOptimal,
+      vk::ImageLayout::ePresentSrcKHR,
+      vk::AccessFlagBits2::eColorAttachmentWrite,         // srcAccessMask
+      {},                                                 // dstAccessMask
+      vk::PipelineStageFlagBits2::eColorAttachmentOutput, // srcStage
+      vk::PipelineStageFlagBits2::eBottomOfPipe,          // dstStage
+      vk::ImageAspectFlagBits::eColor);
   commandBuffer.end();
 }
 
-void Engine::transition_image_layout(uint32_t imageIndex,
+void Engine::transition_image_layout(vk::Image image,
                                      vk::ImageLayout old_layout,
                                      vk::ImageLayout new_layout,
                                      vk::AccessFlags2 src_access_mask,
                                      vk::AccessFlags2 dst_access_mask,
                                      vk::PipelineStageFlags2 src_stage_mask,
-                                     vk::PipelineStageFlags2 dst_stage_mask) {
+                                     vk::PipelineStageFlags2 dst_stage_mask,
+                                     vk::ImageAspectFlags image_aspect_flags) {
   vk::ImageMemoryBarrier2 barrier = {
       .srcStageMask = src_stage_mask,
       .srcAccessMask = src_access_mask,
@@ -965,8 +1040,8 @@ void Engine::transition_image_layout(uint32_t imageIndex,
       .newLayout = new_layout,
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-      .image = images[imageIndex],
-      .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor,
+      .image = image,
+      .subresourceRange = {.aspectMask = image_aspect_flags,
                            .baseMipLevel = 0,
                            .levelCount = 1,
                            .baseArrayLayer = 0,
