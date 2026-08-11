@@ -46,23 +46,17 @@ struct Vertex {
   }
 };
 
-const std::vector<Vertex> vertices = {
-    {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-    {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-    {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-    {{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
-
-    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-    {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-    {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}};
-
-const std::vector<uint16_t> indices = {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
-
 struct Controller {
   float speed{1.0f};
   float xOffset{};
   float yOffset{};
+};
+
+struct VikingRoomObj {
+  const uint32_t width = 800;
+  const uint32_t height = 600;
+  const std::string modelPath = "models/viking_room.obj";
+  const std::string texturePath = "textures/viking_room.png";
 };
 
 struct Engine {
@@ -103,6 +97,7 @@ struct Engine {
                                       vk::ImageAspectFlags aspectFlags);
   void createTextureImageView();
   void createTextureSampler();
+  void loadModel();
   void createVertexBuffer();
   std::pair<vk::raii::Buffer, vk::raii::DeviceMemory>
   createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
@@ -185,4 +180,8 @@ struct Engine {
   std::vector<vk::raii::Semaphore> presentCompleteSemaphores;
   std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
   std::vector<vk::raii::Fence> inFlightFences;
+  VikingRoomObj vikingRoomObj{};
+  std::vector<Vertex> vertices{};
+
+  std::vector<uint32_t> indices{};
 };

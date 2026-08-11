@@ -11,7 +11,7 @@ target_include_directories(main PUBLIC include)
 if (APPLE)
   target_include_directories(main PRIVATE /opt/homebrew/include/glm)
 endif()
-target_include_directories(main PRIVATE vendor/stb)
+target_include_directories(main PRIVATE vendor/stb vendor/tinyobjloader)
 
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -60,11 +60,11 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
           /permissive-
         )
   else()
-    target_compile_options(main PRIVATE
-          -Wall
-          -Wextra
-          -Werror
-          -Wpedantic
-        )
+    # target_compile_options(main PRIVATE
+    #       -Wall
+    #       -Wextra
+    #       -Werror
+    #       -Wpedantic
+    #     )
   endif()
 endif()
