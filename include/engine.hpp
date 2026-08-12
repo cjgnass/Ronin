@@ -7,6 +7,7 @@
 #define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <memory>
 #include <vector>
 #include <vulkan/vulkan_raii.hpp>
 
@@ -59,32 +60,39 @@ struct VikingRoomObj {
   const std::string texturePath = "textures/viking_room.png";
 };
 
+struct Texture {
+  vk::raii::Image image{nullptr};
+  vk::raii::DeviceMemory imageMemory{nullptr};
+  vk::raii::ImageView imageView{nullptr};
+};
+
 struct Engine {
   Engine(int w, int h, std::string t);
   void run();
   void initWindow();
-
   void initVulkan();
   void createInstance();
-  static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(
-      [[maybe_unused]] vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
-      vk::DebugUtilsMessageTypeFlagsEXT type,
-      const vk::DebugUtilsMessengerCallbackDataEXT *pCallbackData,
-      [[maybe_unused]] void *pUserData);
   void createSurface();
   void pickPhysicalDevice();
   void createExtent();
   void createDevice();
   void createSwapchain();
-  void createImageViews();
+  void createSwapchainImageViews();
   void createDescriptorSetLayout();
-  void createPipeline();
+  void createGraphicsPipeline();
   void createCommandPool();
+  void createDepthResources();
+  void createTextures();
+
+  void createTextureSampler();
+  static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(
+      [[maybe_unused]] vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
+      vk::DebugUtilsMessageTypeFlagsEXT type,
+      const vk::DebugUtilsMessengerCallbackDataEXT *pCallbackData,
+      [[maybe_unused]] void *pUserData);
   vk::Format findSupportedFormat(const std::vector<vk::Format> &candidates,
                                  vk::ImageTiling tiling,
                                  vk::FormatFeatureFlags features);
-  void createDepthResources();
-  void createTextureImage();
   void transitionImageLayout(vk::raii::CommandBuffer &commandBuffer,
                              const vk::raii::Image &image,
                              vk::ImageLayout oldLayout,
@@ -95,8 +103,6 @@ struct Engine {
               vk::MemoryPropertyFlags properties);
   vk::raii::ImageView createImageView(vk::Image const &image, vk::Format format,
                                       vk::ImageAspectFlags aspectFlags);
-  void createTextureImageView();
-  void createTextureSampler();
   void loadModel();
   void createVertexBuffer();
   std::pair<vk::raii::Buffer, vk::raii::DeviceMemory>
@@ -149,12 +155,12 @@ struct Engine {
   vk::raii::SurfaceKHR surface{nullptr};
   vk::raii::PhysicalDevice physicalDevice{nullptr};
   vk::Extent2D extent;
-  std::vector<vk::Image> images;
-  std::vector<vk::raii::ImageView> imageViews;
   vk::raii::Device device{nullptr};
   vk::raii::Queue queue{nullptr};
   uint32_t queueIndex{};
   vk::raii::SwapchainKHR swapchain{nullptr};
+  std::vector<vk::Image> swapchainImages;
+  std::vector<vk::raii::ImageView> swapchainImageViews;
   vk::SurfaceFormatKHR swapchainSurfaceFormat;
   vk::raii::DescriptorSetLayout descriptorSetLayout{nullptr};
   std::vector<vk::raii::Buffer> uniformBuffers;
@@ -162,16 +168,14 @@ struct Engine {
   std::vector<void *> uniformBuffersMapped;
   vk::raii::DescriptorPool descriptorPool{nullptr};
   std::vector<vk::raii::DescriptorSet> descriptorSets;
-  vk::raii::Pipeline pipeline{nullptr};
-  vk::raii::PipelineLayout pipelineLayout{nullptr};
+  vk::raii::Pipeline graphicsPipeline{nullptr};
+  vk::raii::PipelineLayout graphicsPipelineLayout{nullptr};
   vk::raii::Buffer vertexBuffer{nullptr};
   vk::raii::DeviceMemory vertexBufferMemory{nullptr};
   vk::raii::Buffer indexBuffer{nullptr};
   vk::raii::DeviceMemory indexBufferMemory{nullptr};
   vk::raii::CommandPool commandPool{nullptr};
-  vk::raii::Image textureImage{nullptr};
-  vk::raii::DeviceMemory textureImageMemory{nullptr};
-  vk::raii::ImageView textureImageView{nullptr};
+  std::vector<std::unique_ptr<Texture>> textures;
   vk::raii::Sampler textureSampler{nullptr};
   vk::raii::Image depthImage{nullptr};
   vk::raii::DeviceMemory depthImageMemory = nullptr;
@@ -182,6 +186,5 @@ struct Engine {
   std::vector<vk::raii::Fence> inFlightFences;
   VikingRoomObj vikingRoomObj{};
   std::vector<Vertex> vertices{};
-
   std::vector<uint32_t> indices{};
 };

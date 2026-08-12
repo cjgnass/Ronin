@@ -43,14 +43,14 @@ void Engine::initVulkan() {
   createExtent();
   createDevice();
   createSwapchain();
-  createImageViews();
+  createSwapchainImageViews();
   createDescriptorSetLayout();
-  createPipeline();
+  createGraphicsPipeline();
   createCommandPool();
   createDepthResources();
-  createTextureImage();
-  createTextureImageView();
+  createTextures();
   createTextureSampler();
+
   loadModel();
   createVertexBuffer();
   createIndexBuffer();
@@ -231,8 +231,8 @@ void Engine::createSwapchain() {
   swapchain = vk::raii::SwapchainKHR{device, swapchainInfo};
 }
 
-void Engine::createImageViews() {
-  images = swapchain.getImages();
+void Engine::createSwapchainImageViews() {
+  swapchainImages = swapchain.getImages();
   vk::ImageViewCreateInfo imageViewCreateInfo{
       .viewType = vk::ImageViewType::e2D,
       .format = swapchainSurfaceFormat.format,
@@ -244,9 +244,9 @@ void Engine::createImageViews() {
                                               vk::ImageAspectFlagBits::eColor,
                                           .levelCount = 1,
                                           .layerCount = 1};
-  for (auto &image : images) {
+  for (auto &image : swapchainImages) {
     imageViewCreateInfo.image = image;
-    imageViews.emplace_back(createImageView(
+    swapchainImageViews.emplace_back(createImageView(
         image, swapchainSurfaceFormat.format, vk::ImageAspectFlagBits::eColor));
   }
 }
@@ -348,7 +348,7 @@ void Engine::createDescriptorSetLayout() {
   descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
 }
 
-void Engine::createPipeline() {
+void Engine::createGraphicsPipeline() {
   // read shader file
   std::ifstream shaderFile("./build/shaders/shader.spv",
                            std::ios::ate | std::ios::binary);
@@ -434,7 +434,7 @@ void Engine::createPipeline() {
       .pSetLayouts = &*descriptorSetLayout,
       .pushConstantRangeCount = 0,
   };
-  pipelineLayout = vk::raii::PipelineLayout{device, pipelineLayoutInfo};
+  graphicsPipelineLayout = vk::raii::PipelineLayout{device, pipelineLayoutInfo};
   std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport,
                                                  vk::DynamicState::eScissor};
   vk::PipelineDynamicStateCreateInfo dynamicState{
@@ -459,7 +459,7 @@ void Engine::createPipeline() {
            .pDepthStencilState = &depthStencil,
            .pColorBlendState = &colorBlending,
            .pDynamicState = &dynamicState,
-           .layout = pipelineLayout,
+           .layout = graphicsPipelineLayout,
            .renderPass = nullptr},
           {.colorAttachmentCount = 1,
            .pColorAttachmentFormats = &swapchainSurfaceFormat.format,
@@ -468,7 +468,7 @@ void Engine::createPipeline() {
                 vk::Format::eD24UnormS8Uint},
                vk::ImageTiling::eOptimal,
                vk::FormatFeatureFlagBits::eDepthStencilAttachment)}};
-  pipeline = vk::raii::Pipeline{
+  graphicsPipeline = vk::raii::Pipeline{
       device, nullptr,
       pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>()};
 }
@@ -641,7 +641,7 @@ void Engine::createDescriptorSets() {
                                         .range = sizeof(UniformBufferObject)};
     vk::DescriptorImageInfo imageInfo{
         .sampler = textureSampler,
-        .imageView = textureImageView,
+        .imageView = textures[0]->imageView,
         .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
     std::array<vk::WriteDescriptorSet, 2> descriptorWrites{
         {{.dstSet = descriptorSets[i],
@@ -681,6 +681,44 @@ void Engine::createDepthResources() {
       createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
 }
 
+void Engine::createTextures() {
+  std::unique_ptr<Texture> texture{std::make_unique<Texture>()};
+  int texWidth, texHeight, texChannels;
+  stbi_uc *pixels = stbi_load(vikingRoomObj.texturePath.c_str(), &texWidth,
+                              &texHeight, &texChannels, STBI_rgb_alpha);
+  vk::DeviceSize imageSize = texWidth * texHeight * 4;
+  if (!pixels) {
+    throw std::runtime_error("failed to load texture image!");
+  }
+  auto [stagingBuffer, stagingBufferMemory] =
+      createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc,
+                   vk::MemoryPropertyFlagBits::eHostVisible |
+                       vk::MemoryPropertyFlagBits::eHostCoherent);
+  void *data = stagingBufferMemory.mapMemory(0, imageSize);
+  memcpy(data, pixels, imageSize);
+  stagingBufferMemory.unmapMemory();
+  stbi_image_free(pixels);
+  std::tie(texture->image, texture->imageMemory) = createImage(
+      texWidth, texHeight, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
+      vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+      vk::MemoryPropertyFlagBits::eDeviceLocal);
+  vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands();
+  transitionImageLayout(commandBuffer, texture->image,
+                        vk::ImageLayout::eUndefined,
+                        vk::ImageLayout::eTransferDstOptimal);
+  copyBufferToImage(commandBuffer, stagingBuffer, texture->image,
+                    static_cast<uint32_t>(texWidth),
+                    static_cast<uint32_t>(texHeight));
+  transitionImageLayout(commandBuffer, texture->image,
+                        vk::ImageLayout::eTransferDstOptimal,
+                        vk::ImageLayout::eShaderReadOnlyOptimal);
+  endSingleTimeCommands(std::move(commandBuffer));
+  texture->imageView =
+      createImageView(*texture->image, vk::Format::eR8G8B8A8Srgb,
+                      vk::ImageAspectFlagBits::eColor);
+  textures.push_back(std::move(texture));
+}
+
 vk::Format
 Engine::findSupportedFormat(const std::vector<vk::Format> &candidates,
                             vk::ImageTiling tiling,
@@ -697,44 +735,6 @@ Engine::findSupportedFormat(const std::vector<vk::Format> &candidates,
   }
 
   throw std::runtime_error("failed to find supported format!");
-}
-
-void Engine::createTextureImage() {
-  int texWidth, texHeight, texChannels;
-  stbi_uc *pixels = stbi_load(vikingRoomObj.texturePath.c_str(), &texWidth,
-                              &texHeight, &texChannels, STBI_rgb_alpha);
-  vk::DeviceSize imageSize = texWidth * texHeight * 4;
-
-  if (!pixels) {
-    throw std::runtime_error("failed to load texture image!");
-  }
-
-  auto [stagingBuffer, stagingBufferMemory] =
-      createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc,
-                   vk::MemoryPropertyFlagBits::eHostVisible |
-                       vk::MemoryPropertyFlagBits::eHostCoherent);
-
-  void *data = stagingBufferMemory.mapMemory(0, imageSize);
-  memcpy(data, pixels, imageSize);
-  stagingBufferMemory.unmapMemory();
-
-  stbi_image_free(pixels);
-
-  std::tie(textureImage, textureImageMemory) = createImage(
-      texWidth, texHeight, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
-      vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
-      vk::MemoryPropertyFlagBits::eDeviceLocal);
-  vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands();
-  transitionImageLayout(commandBuffer, textureImage,
-                        vk::ImageLayout::eUndefined,
-                        vk::ImageLayout::eTransferDstOptimal);
-  copyBufferToImage(commandBuffer, stagingBuffer, textureImage,
-                    static_cast<uint32_t>(texWidth),
-                    static_cast<uint32_t>(texHeight));
-  transitionImageLayout(commandBuffer, textureImage,
-                        vk::ImageLayout::eTransferDstOptimal,
-                        vk::ImageLayout::eShaderReadOnlyOptimal);
-  endSingleTimeCommands(std::move(commandBuffer));
 }
 
 void Engine::transitionImageLayout(vk::raii::CommandBuffer &commandBuffer,
@@ -837,11 +837,6 @@ Engine::createImage(uint32_t width, uint32_t height, vk::Format format,
   return {std::move(image), std::move(imageMemory)};
 }
 
-void Engine::createTextureImageView() {
-  textureImageView = createImageView(*textureImage, vk::Format::eR8G8B8A8Srgb,
-                                     vk::ImageAspectFlagBits::eColor);
-}
-
 vk::raii::ImageView Engine::createImageView(vk::Image const &image,
                                             vk::Format format,
                                             vk::ImageAspectFlags aspectFlags) {
@@ -883,7 +878,7 @@ void Engine::createCommandBuffers() {
 }
 
 void Engine::createSyncObjects() {
-  for (size_t i = 0; i < images.size(); i++) {
+  for (size_t i = 0; i < swapchainImages.size(); i++) {
     renderFinishedSemaphores.emplace_back(device, vk::SemaphoreCreateInfo());
   }
 
@@ -962,15 +957,14 @@ void Engine::drawFrame() {
 }
 
 void Engine::updateUniformBuffer(uint32_t currentImageIndex) {
-  // static auto startTime = std::chrono::high_resolution_clock::now();
-  // auto currentTime = std::chrono::high_resolution_clock::now();
-  // float time = std::chrono::duration<float>(currentTime -
-  // startTime).count();
+  static auto startTime = std::chrono::high_resolution_clock::now();
+  auto currentTime = std::chrono::high_resolution_clock::now();
+  float time = std::chrono::duration<float>(currentTime - startTime).count();
 
   UniformBufferObject ubo{};
-  // ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f),
-  //                    glm::vec3(0.0f, 0.0f, 1.0f));
-  ubo.model = glm::mat4(1.0f);
+  ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f),
+                     glm::vec3(0.0f, 0.0f, 1.0f));
+  // ubo.model = glm::mat4(1.0f);
   ubo.view = lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f),
                     glm::vec3(0.0f, 0.0f, 1.0f));
   ubo.projection = glm::perspective(glm::radians(45.0f),
@@ -985,7 +979,8 @@ void Engine::recordCommandBuffer(int imageIndex) {
 
   auto &commandBuffer{commandBuffers[frameIndex]};
   commandBuffer.begin({});
-  transition_image_layout(images[imageIndex], vk::ImageLayout::eUndefined,
+  transition_image_layout(swapchainImages[imageIndex],
+                          vk::ImageLayout::eUndefined,
                           vk::ImageLayout::eColorAttachmentOptimal, {},
                           vk::AccessFlagBits2::eColorAttachmentWrite,
                           vk::PipelineStageFlagBits2::eColorAttachmentOutput,
@@ -1015,7 +1010,7 @@ void Engine::recordCommandBuffer(int imageIndex) {
       .storeOp = vk::AttachmentStoreOp::eDontCare,
       .clearValue = clearDepth};
   vk::RenderingAttachmentInfo attachmentInfo = {
-      .imageView = imageViews[imageIndex],
+      .imageView = swapchainImageViews[imageIndex],
       .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
       .loadOp = vk::AttachmentLoadOp::eClear,
       .storeOp = vk::AttachmentStoreOp::eStore,
@@ -1028,7 +1023,8 @@ void Engine::recordCommandBuffer(int imageIndex) {
       .pDepthAttachment = &depthAttachmentInfo};
 
   commandBuffer.beginRendering(renderingInfo);
-  commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
+  commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                             *graphicsPipeline);
   commandBuffer.setViewport(
       0, vk::Viewport(0.0f, 0.0f, static_cast<float>(extent.width),
                       static_cast<float>(extent.height), 0.0f, 1.0f));
@@ -1038,12 +1034,12 @@ void Engine::recordCommandBuffer(int imageIndex) {
       *indexBuffer, 0,
       vk::IndexTypeValue<decltype(indices)::value_type>::value);
   commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                   pipelineLayout, 0,
+                                   graphicsPipelineLayout, 0,
                                    *descriptorSets[frameIndex], nullptr);
   commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
   commandBuffer.endRendering();
   transition_image_layout(
-      images[imageIndex], vk::ImageLayout::eColorAttachmentOptimal,
+      swapchainImages[imageIndex], vk::ImageLayout::eColorAttachmentOptimal,
       vk::ImageLayout::ePresentSrcKHR,
       vk::AccessFlagBits2::eColorAttachmentWrite,         // srcAccessMask
       {},                                                 // dstAccessMask
@@ -1088,5 +1084,5 @@ void Engine::cleanup() {
   glfwDestroyWindow(window);
   glfwTerminate();
 
-  imageViews.clear();
+  swapchainImageViews.clear();
 }
