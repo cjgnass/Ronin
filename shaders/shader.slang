@@ -1,10 +1,14 @@
-struct UniformBufferObject {
-  float4x4 model;
+struct FrameData {
   float4x4 view;
   float4x4 projection;
 };
 
-ConstantBuffer<UniformBufferObject> ubo;
+struct ObjectData {
+  float4x4 model;
+};
+
+ConstantBuffer<FrameData> frameData;
+ConstantBuffer<ObjectData> objectData;
 
 struct VertexInput {
   float3 position;
@@ -23,9 +27,10 @@ Sampler2D texture;
 [shader("vertex")]
 VertexOutput vertMain(VertexInput vertexInput) {
   VertexOutput vertexOutput;
-  vertexOutput.position = mul(
-      ubo.projection,
-      mul(ubo.view, mul(ubo.model, float4(vertexInput.position, 1.0f))));
+  vertexOutput.position =
+      mul(frameData.projection,
+          mul(frameData.view,
+              mul(objectData.model, float4(vertexInput.position, 1.0f))));
   vertexOutput.color = vertexInput.color;
   vertexOutput.texCoord = vertexInput.texCoord;
   return vertexOutput;

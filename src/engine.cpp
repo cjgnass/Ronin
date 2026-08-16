@@ -50,10 +50,8 @@ void Engine::initVulkan() {
   createDepthResources();
   createTextures();
   createTextureSampler();
-
-  loadModel();
-  createVertexBuffer();
-  createIndexBuffer();
+  createMeshes();
+  createGameObjects();
   createUniformBuffers();
   createDescriptorPool();
   createDescriptorSets();
@@ -333,12 +331,16 @@ void Engine::createDevice() {
 }
 
 void Engine::createDescriptorSetLayout() {
-  std::array<vk::DescriptorSetLayoutBinding, 2> bindings{
+  std::array<vk::DescriptorSetLayoutBinding, 3> bindings{
       {{.binding = 0,
         .descriptorType = vk::DescriptorType::eUniformBuffer,
         .descriptorCount = 1,
         .stageFlags = vk::ShaderStageFlagBits::eVertex},
        {.binding = 1,
+        .descriptorType = vk::DescriptorType::eUniformBufferDynamic,
+        .descriptorCount = 1,
+        .stageFlags = vk::ShaderStageFlagBits::eVertex},
+       {.binding = 2,
         .descriptorType = vk::DescriptorType::eCombinedImageSampler,
         .descriptorCount = 1,
         .stageFlags = vk::ShaderStageFlagBits::eFragment}}};
@@ -473,50 +475,6 @@ void Engine::createGraphicsPipeline() {
       pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>()};
 }
 
-void Engine::loadModel() {
-  tinyobj::attrib_t attrib;
-  std::vector<tinyobj::shape_t> shapes;
-  std::vector<tinyobj::material_t> materials;
-  std::string warn, err;
-
-  if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err,
-                        vikingRoomObj.modelPath.c_str())) {
-    throw std::runtime_error(warn + err);
-  }
-  for (const auto &shape : shapes) {
-    for (const auto &index : shape.mesh.indices) {
-      Vertex vertex{};
-      vertex.position = {attrib.vertices[3 * index.vertex_index + 0],
-                         attrib.vertices[3 * index.vertex_index + 1],
-                         attrib.vertices[3 * index.vertex_index + 2]};
-
-      vertex.texCoord = {attrib.texcoords[2 * index.texcoord_index + 0],
-                         attrib.texcoords[2 * index.texcoord_index + 1]};
-
-      vertex.color = {1.0f, 1.0f, 1.0f};
-      vertices.push_back(vertex);
-      indices.push_back(indices.size());
-    }
-  }
-}
-
-void Engine::createVertexBuffer() {
-  vk::DeviceSize bufferSize{sizeof(vertices[0]) * vertices.size()};
-  auto [stagingBuffer, stagingBufferMemory] =
-      createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
-                   vk::MemoryPropertyFlagBits::eHostVisible |
-                       vk::MemoryPropertyFlagBits::eHostCoherent);
-  void *dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
-  memcpy(dataStaging, vertices.data(), bufferSize);
-  stagingBufferMemory.unmapMemory();
-  std::tie(vertexBuffer, vertexBufferMemory) =
-      createBuffer(bufferSize,
-                   vk::BufferUsageFlagBits::eVertexBuffer |
-                       vk::BufferUsageFlagBits::eTransferDst,
-                   vk::MemoryPropertyFlagBits::eDeviceLocal);
-  copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
-}
-
 std::pair<vk::raii::Buffer, vk::raii::DeviceMemory>
 Engine::createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
                      vk::MemoryPropertyFlags properties) {
@@ -576,7 +534,7 @@ void Engine::endSingleTimeCommands(vk::raii::CommandBuffer &&commandBuffer) {
   queue.waitIdle();
 }
 
-void Engine::createIndexBuffer() {
+void Engine::createIndexBuffer(const std::vector<uint32_t> &indices) {
   vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
 
   auto [stagingBuffer, stagingBufferMemory] =
@@ -598,6 +556,13 @@ void Engine::createIndexBuffer() {
 }
 
 void Engine::createUniformBuffers() {
+  const vk::DeviceSize alignment =
+      physicalDevice.getProperties().limits.minUniformBufferOffsetAlignment;
+  objectStride = sizeof(ObjectBufferObject);
+  if (alignment > 0) {
+    objectStride = (objectStride + alignment - 1) & ~(alignment - 1);
+  }
+
   for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
     vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
     auto [buffer, bufferMem] =
@@ -608,26 +573,42 @@ void Engine::createUniformBuffers() {
     uniformBuffersMemory.emplace_back(std::move(bufferMem));
     uniformBuffersMapped.emplace_back(
         uniformBuffersMemory.back().mapMemory(0, bufferSize));
+
+    const vk::DeviceSize objectBufferSize = objectStride * gameObjects.size();
+    auto [objectBuffer, objectBufferMemory] =
+        createBuffer(objectBufferSize, vk::BufferUsageFlagBits::eUniformBuffer,
+                     vk::MemoryPropertyFlagBits::eHostVisible |
+                         vk::MemoryPropertyFlagBits::eHostCoherent);
+    objectBuffers.emplace_back(std::move(objectBuffer));
+    objectBuffersMemory.emplace_back(std::move(objectBufferMemory));
+    objectBuffersMapped.emplace_back(
+        objectBuffersMemory.back().mapMemory(0, objectBufferSize));
   }
 }
 
 void Engine::createDescriptorPool() {
-  std::array<vk::DescriptorPoolSize, 2> poolSize{
+  const uint32_t setCount =
+      MAX_FRAMES_IN_FLIGHT * static_cast<uint32_t>(textures.size());
+  std::array<vk::DescriptorPoolSize, 3> poolSize{
       {{.type = vk::DescriptorType::eUniformBuffer,
-        .descriptorCount = MAX_FRAMES_IN_FLIGHT},
+        .descriptorCount = setCount},
+       {.type = vk::DescriptorType::eUniformBufferDynamic,
+        .descriptorCount = setCount},
        {.type = vk::DescriptorType::eCombinedImageSampler,
-        .descriptorCount = MAX_FRAMES_IN_FLIGHT}}};
+        .descriptorCount = setCount}}};
   vk::DescriptorPoolCreateInfo poolInfo{
       .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-      .maxSets = MAX_FRAMES_IN_FLIGHT,
+      .maxSets = setCount,
       .poolSizeCount = static_cast<uint32_t>(poolSize.size()),
       .pPoolSizes = poolSize.data()};
   descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
 }
 
 void Engine::createDescriptorSets() {
-  std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
-                                               *descriptorSetLayout);
+  const uint32_t textureCount = static_cast<uint32_t>(textures.size());
+  const uint32_t setCount = MAX_FRAMES_IN_FLIGHT * textureCount;
+
+  std::vector<vk::DescriptorSetLayout> layouts(setCount, *descriptorSetLayout);
   vk::DescriptorSetAllocateInfo allocInfo{
       .descriptorPool = descriptorPool,
       .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
@@ -635,28 +616,44 @@ void Engine::createDescriptorSets() {
 
   descriptorSets = device.allocateDescriptorSets(allocInfo);
 
-  for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-    vk::DescriptorBufferInfo bufferInfo{.buffer = uniformBuffers[i],
-                                        .offset = 0,
-                                        .range = sizeof(UniformBufferObject)};
-    vk::DescriptorImageInfo imageInfo{
-        .sampler = textureSampler,
-        .imageView = textures[0]->imageView,
-        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
-    std::array<vk::WriteDescriptorSet, 2> descriptorWrites{
-        {{.dstSet = descriptorSets[i],
-          .dstBinding = 0,
-          .dstArrayElement = 0,
-          .descriptorCount = 1,
-          .descriptorType = vk::DescriptorType::eUniformBuffer,
-          .pBufferInfo = &bufferInfo},
-         {.dstSet = descriptorSets[i],
-          .dstBinding = 1,
-          .dstArrayElement = 0,
-          .descriptorCount = 1,
-          .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-          .pImageInfo = &imageInfo}}};
-    device.updateDescriptorSets(descriptorWrites, {});
+  for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
+    for (uint32_t textureIndex = 0; textureIndex < textureCount;
+         ++textureIndex) {
+      const uint32_t setIndex = frame * textureCount + textureIndex;
+
+      vk::DescriptorBufferInfo bufferInfo{.buffer = uniformBuffers[frame],
+                                          .offset = 0,
+                                          .range = sizeof(UniformBufferObject)};
+      vk::DescriptorBufferInfo objectBufferInfo{.buffer = objectBuffers[frame],
+                                                .offset = 0,
+                                                .range =
+                                                    sizeof(ObjectBufferObject)};
+
+      vk::DescriptorImageInfo imageInfo{
+          .sampler = textureSampler,
+          .imageView = textures[textureIndex].imageView,
+          .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
+
+      std::array<vk::WriteDescriptorSet, 3> writes{{
+          {.dstSet = descriptorSets[setIndex],
+           .dstBinding = 0,
+           .descriptorCount = 1,
+           .descriptorType = vk::DescriptorType::eUniformBuffer,
+           .pBufferInfo = &bufferInfo},
+          {.dstSet = descriptorSets[setIndex],
+           .dstBinding = 1,
+           .descriptorCount = 1,
+           .descriptorType = vk::DescriptorType::eUniformBufferDynamic,
+           .pBufferInfo = &objectBufferInfo},
+          {.dstSet = descriptorSets[setIndex],
+           .dstBinding = 2,
+           .descriptorCount = 1,
+           .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+           .pImageInfo = &imageInfo},
+      }};
+
+      device.updateDescriptorSets(writes, {});
+    }
   }
 }
 
@@ -682,10 +679,20 @@ void Engine::createDepthResources() {
 }
 
 void Engine::createTextures() {
-  std::unique_ptr<Texture> texture{std::make_unique<Texture>()};
+  createTexture("pog", "./textures/pog.jpg");
+  createTexture("viking room", "./textures/viking_room.png");
+}
+
+void Engine::createTexture(const std::string &name, const std::string &path) {
+  if (textureMap.find(name) != textureMap.end()) {
+    throw std::runtime_error("texture already exists: " + name);
+  }
+  textureMap[name] = textures.size();
+
+  Texture texture{};
   int texWidth, texHeight, texChannels;
-  stbi_uc *pixels = stbi_load(vikingRoomObj.texturePath.c_str(), &texWidth,
-                              &texHeight, &texChannels, STBI_rgb_alpha);
+  stbi_uc *pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels,
+                              STBI_rgb_alpha);
   vk::DeviceSize imageSize = texWidth * texHeight * 4;
   if (!pixels) {
     throw std::runtime_error("failed to load texture image!");
@@ -698,24 +705,23 @@ void Engine::createTextures() {
   memcpy(data, pixels, imageSize);
   stagingBufferMemory.unmapMemory();
   stbi_image_free(pixels);
-  std::tie(texture->image, texture->imageMemory) = createImage(
+  std::tie(texture.image, texture.imageMemory) = createImage(
       texWidth, texHeight, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
       vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
       vk::MemoryPropertyFlagBits::eDeviceLocal);
   vk::raii::CommandBuffer commandBuffer = beginSingleTimeCommands();
-  transitionImageLayout(commandBuffer, texture->image,
+  transitionImageLayout(commandBuffer, texture.image,
                         vk::ImageLayout::eUndefined,
                         vk::ImageLayout::eTransferDstOptimal);
-  copyBufferToImage(commandBuffer, stagingBuffer, texture->image,
+  copyBufferToImage(commandBuffer, stagingBuffer, texture.image,
                     static_cast<uint32_t>(texWidth),
                     static_cast<uint32_t>(texHeight));
-  transitionImageLayout(commandBuffer, texture->image,
+  transitionImageLayout(commandBuffer, texture.image,
                         vk::ImageLayout::eTransferDstOptimal,
                         vk::ImageLayout::eShaderReadOnlyOptimal);
   endSingleTimeCommands(std::move(commandBuffer));
-  texture->imageView =
-      createImageView(*texture->image, vk::Format::eR8G8B8A8Srgb,
-                      vk::ImageAspectFlagBits::eColor);
+  texture.imageView = createImageView(*texture.image, vk::Format::eR8G8B8A8Srgb,
+                                      vk::ImageAspectFlagBits::eColor);
   textures.push_back(std::move(texture));
 }
 
@@ -956,15 +962,8 @@ void Engine::drawFrame() {
   frameIndex = (frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-void Engine::updateUniformBuffer(uint32_t currentImageIndex) {
-  static auto startTime = std::chrono::high_resolution_clock::now();
-  auto currentTime = std::chrono::high_resolution_clock::now();
-  float time = std::chrono::duration<float>(currentTime - startTime).count();
-
+void Engine::updateUniformBuffer(uint32_t currentFrame) {
   UniformBufferObject ubo{};
-  ubo.model = rotate(glm::mat4(1.0f), time * glm::radians(90.0f),
-                     glm::vec3(0.0f, 0.0f, 1.0f));
-  // ubo.model = glm::mat4(1.0f);
   ubo.view = lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f),
                     glm::vec3(0.0f, 0.0f, 1.0f));
   ubo.projection = glm::perspective(glm::radians(45.0f),
@@ -972,11 +971,30 @@ void Engine::updateUniformBuffer(uint32_t currentImageIndex) {
                                         static_cast<float>(extent.height),
                                     0.1f, 10.0f);
   ubo.projection[1][1] *= -1;
-  memcpy(uniformBuffersMapped[currentImageIndex], &ubo, sizeof(ubo));
+  memcpy(uniformBuffersMapped[currentFrame], &ubo, sizeof(ubo));
+
+  for (size_t objectIndex = 0; objectIndex < gameObjects.size();
+       ++objectIndex) {
+    const Transform &transform = gameObjects[objectIndex].transform;
+    glm::mat4 model{1.0f};
+    model = glm::translate(model, transform.position);
+    model =
+        glm::rotate(model, transform.rotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
+    model =
+        glm::rotate(model, transform.rotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
+    model =
+        glm::rotate(model, transform.rotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
+    model = glm::scale(model, transform.scale);
+
+    const ObjectBufferObject objectData{.model = model};
+    std::byte *destination =
+        static_cast<std::byte *>(objectBuffersMapped[currentFrame]) +
+        objectIndex * objectStride;
+    memcpy(destination, &objectData, sizeof(objectData));
+  }
 }
 
 void Engine::recordCommandBuffer(int imageIndex) {
-
   auto &commandBuffer{commandBuffers[frameIndex]};
   commandBuffer.begin({});
   transition_image_layout(swapchainImages[imageIndex],
@@ -1030,13 +1048,24 @@ void Engine::recordCommandBuffer(int imageIndex) {
                       static_cast<float>(extent.height), 0.0f, 1.0f));
   commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), extent));
   commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
-  commandBuffer.bindIndexBuffer(
-      *indexBuffer, 0,
-      vk::IndexTypeValue<decltype(indices)::value_type>::value);
-  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                   graphicsPipelineLayout, 0,
-                                   *descriptorSets[frameIndex], nullptr);
-  commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+  commandBuffer.bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
+  const uint32_t textureCount = static_cast<uint32_t>(textures.size());
+  for (size_t objectIndex = 0; objectIndex < gameObjects.size();
+       ++objectIndex) {
+    const GameObject &gameObject = gameObjects[objectIndex];
+    const uint32_t setIndex =
+        frameIndex * textureCount + gameObject.textureIndex;
+    const std::array<uint32_t, 1> dynamicOffsets{
+        static_cast<uint32_t>(objectIndex * objectStride)};
+
+    commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                     graphicsPipelineLayout, 0,
+                                     *descriptorSets[setIndex], dynamicOffsets);
+
+    const Mesh &mesh = meshes[gameObject.meshIndex];
+    commandBuffer.drawIndexed(mesh.indexCount, 1, mesh.firstIndex,
+                              mesh.firstVertex, 0);
+  }
   commandBuffer.endRendering();
   transition_image_layout(
       swapchainImages[imageIndex], vk::ImageLayout::eColorAttachmentOptimal,
@@ -1085,4 +1114,90 @@ void Engine::cleanup() {
   glfwTerminate();
 
   swapchainImageViews.clear();
+}
+
+void Engine::createGameObjects() {
+  Transform t1{.position = glm::vec3(0.0f),
+               .rotation = glm::vec3(0.0f),
+               .scale = glm::vec3(1.0f)};
+  createGameObject("viking room", "viking room", t1);
+  Transform t2{.position = glm::vec3(1.0f, 0.0f, 0.0f),
+               .rotation = glm::vec3(0.0f),
+               .scale = glm::vec3(1.0f)};
+  createGameObject("plane", "pog", t2);
+}
+
+void Engine::createGameObject(const std::string &meshName,
+                              const std::string &textureName,
+                              Transform transform) {
+  gameObjects.emplace_back(meshMap[meshName], textureMap[textureName],
+                           transform);
+}
+
+void Engine::createMeshes() {
+  std::vector<Vertex> vertices;
+  std::vector<uint32_t> indices;
+  createMesh(vertices, indices, "plane", "./models/plane.obj");
+  createMesh(vertices, indices, "viking room", "./models/viking_room.obj");
+  createVertexBuffer(vertices);
+  createIndexBuffer(indices);
+}
+
+void Engine::createMesh(std::vector<Vertex> &vertices,
+                        std::vector<uint32_t> &indices, const std::string &name,
+                        const std::string &path) {
+  if (meshMap.find(name) != meshMap.end()) {
+    throw std::runtime_error("Mesh already exists: " + name);
+  }
+  meshMap[name] = meshes.size();
+  tinyobj::attrib_t attrib;
+  std::vector<tinyobj::shape_t> shapes;
+  std::vector<tinyobj::material_t> materials;
+  std::string warn, err;
+
+  if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err,
+                        path.c_str())) {
+    throw std::runtime_error(warn + err);
+  }
+  Mesh mesh{
+      .firstVertex = static_cast<uint32_t>(vertices.size()),
+      .vertexCount = 0,
+      .firstIndex = static_cast<uint32_t>(indices.size()),
+      .indexCount = 0,
+  };
+  for (const auto &shape : shapes) {
+    for (const auto &index : shape.mesh.indices) {
+      Vertex vertex{};
+      vertex.position = {attrib.vertices[3 * index.vertex_index + 0],
+                         attrib.vertices[3 * index.vertex_index + 1],
+                         attrib.vertices[3 * index.vertex_index + 2]};
+
+      vertex.texCoord = {attrib.texcoords[2 * index.texcoord_index + 0],
+                         attrib.texcoords[2 * index.texcoord_index + 1]};
+
+      vertex.color = {1.0f, 1.0f, 1.0f};
+      vertices.push_back(vertex);
+      mesh.vertexCount += 1;
+      indices.push_back(indices.size());
+      mesh.indexCount += 1;
+    }
+  }
+  meshes.push_back(mesh);
+}
+
+void Engine::createVertexBuffer(const std::vector<Vertex> &vertices) {
+  vk::DeviceSize bufferSize{sizeof(vertices[0]) * vertices.size()};
+  auto [stagingBuffer, stagingBufferMemory] =
+      createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                   vk::MemoryPropertyFlagBits::eHostVisible |
+                       vk::MemoryPropertyFlagBits::eHostCoherent);
+  void *dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+  memcpy(dataStaging, vertices.data(), bufferSize);
+  stagingBufferMemory.unmapMemory();
+  std::tie(vertexBuffer, vertexBufferMemory) =
+      createBuffer(bufferSize,
+                   vk::BufferUsageFlagBits::eVertexBuffer |
+                       vk::BufferUsageFlagBits::eTransferDst,
+                   vk::MemoryPropertyFlagBits::eDeviceLocal);
+  copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
 }
