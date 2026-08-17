@@ -50,12 +50,6 @@ struct Vertex {
   }
 };
 
-struct Controller {
-  float speed{1.0f};
-  float xOffset{};
-  float yOffset{};
-};
-
 struct Mesh {
   uint32_t firstVertex;
   uint32_t vertexCount;
@@ -77,6 +71,13 @@ struct GameObject {
   uint32_t meshIndex;
   uint32_t textureIndex;
   Transform transform;
+};
+
+struct Camera {
+  glm::vec3 position;
+  glm::vec3 direction;
+  glm::vec3 up;
+  float speed;
 };
 
 struct Engine {
@@ -104,6 +105,7 @@ struct Engine {
   void createDescriptorSets();
   void createCommandBuffers();
   void createSyncObjects();
+  void initCamera();
 
   void createMesh(std::vector<Vertex> &vertices, std::vector<uint32_t> &indices,
                   const std::string &name, const std::string &path);
@@ -143,8 +145,6 @@ struct Engine {
                          const vk::raii::Buffer &buffer, vk::raii::Image &image,
                          uint32_t width, uint32_t height);
 
-  void createController();
-
   void mainLoop();
   void drawFrame();
   void updateUniformBuffer(uint32_t currentImageIndex);
@@ -165,8 +165,6 @@ struct Engine {
   int height;
   std::string title;
   GLFWwindow *window;
-
-  Controller controller;
 
   vk::raii::Instance instance{nullptr};
   vk::raii::Context context;
@@ -213,4 +211,5 @@ struct Engine {
   std::unordered_map<std::string, uint32_t> meshMap;
   std::vector<GameObject> gameObjects;
   std::unordered_map<std::string, uint32_t> gameObjectMap;
+  Camera camera;
 };

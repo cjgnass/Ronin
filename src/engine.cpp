@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "GLFW/glfw3.h"
 #include "vulkan/vulkan.hpp"
 #include <chrono>
 #include <fstream>
@@ -34,6 +35,7 @@ void Engine::initWindow() {
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
   window = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
+  glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 }
 
 void Engine::initVulkan() {
@@ -57,6 +59,7 @@ void Engine::initVulkan() {
   createDescriptorSets();
   createCommandBuffers();
   createSyncObjects();
+  initCamera();
 }
 
 void Engine::createInstance() {
@@ -896,25 +899,56 @@ void Engine::createSyncObjects() {
   }
 }
 
-void Engine::createController() { controller = Controller{}; }
-
 void Engine::mainLoop() {
   auto previousTime = std::chrono::steady_clock::now();
+  double xpos{};
+  double ypos{};
+  glfwGetCursorPos(window, &xpos, &ypos);
+  double lastX{xpos};
+  double lastY{ypos};
+  double yaw{};
+  double pitch{};
   while (!glfwWindowShouldClose(window)) {
     const auto currentTime = std::chrono::steady_clock::now();
     const std::chrono::duration<float> elapsed = currentTime - previousTime;
     const float deltaTime = elapsed.count(); // seconds since last frame
     previousTime = currentTime;
+    glfwGetCursorPos(window, &xpos, &ypos);
+    double xOffset = xpos - lastX;
+    double yOffset = lastY - ypos;
 
+    lastX = xpos;
+    lastY = ypos;
+
+    float sensitivity = 0.05f;
+
+    xOffset *= sensitivity;
+    yOffset *= sensitivity;
+
+    yaw += xOffset;
+    pitch += yOffset;
+
+    pitch = glm::clamp(pitch, -89.0, 89.0);
+    camera.direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+
+    camera.direction.y = sin(glm::radians(pitch));
+
+    camera.direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
     glfwPollEvents();
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-      controller.xOffset -= controller.speed * deltaTime;
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-      controller.xOffset += controller.speed * deltaTime;
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-      controller.yOffset += controller.speed * deltaTime;
+      camera.position += camera.direction * camera.speed * deltaTime;
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-      controller.yOffset -= controller.speed * deltaTime;
+      camera.position -= camera.direction * camera.speed * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+      camera.position -=
+          glm::cross(camera.direction, camera.up) * camera.speed * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+      camera.position +=
+          glm::cross(camera.direction, camera.up) * camera.speed * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
+      camera.position += camera.up * camera.speed * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+      camera.position -= camera.up * camera.speed * deltaTime;
     drawFrame();
   }
 }
@@ -964,8 +998,9 @@ void Engine::drawFrame() {
 
 void Engine::updateUniformBuffer(uint32_t currentFrame) {
   UniformBufferObject ubo{};
-  ubo.view = lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f),
-                    glm::vec3(0.0f, 0.0f, 1.0f));
+
+  ubo.view =
+      lookAt(camera.position, camera.position + camera.direction, camera.up);
   ubo.projection = glm::perspective(glm::radians(45.0f),
                                     static_cast<float>(extent.width) /
                                         static_cast<float>(extent.height),
@@ -1118,7 +1153,7 @@ void Engine::cleanup() {
 
 void Engine::createGameObjects() {
   Transform t1{.position = glm::vec3(0.0f),
-               .rotation = glm::vec3(0.0f),
+               .rotation = glm::vec3(glm::radians(-90.0f), 0.0f, 0.0f),
                .scale = glm::vec3(1.0f)};
   createGameObject("viking room", "viking room", t1);
   Transform t2{.position = glm::vec3(1.0f, 0.0f, 0.0f),
@@ -1200,4 +1235,11 @@ void Engine::createVertexBuffer(const std::vector<Vertex> &vertices) {
                        vk::BufferUsageFlagBits::eTransferDst,
                    vk::MemoryPropertyFlagBits::eDeviceLocal);
   copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+}
+
+void Engine::initCamera() {
+  camera.position = glm::vec3(2.0f, 0.0f, 0.0f);
+  camera.direction = glm::vec3(-1.0f, 0.0f, 0.0f);
+  camera.up = glm::vec3(0.0f, 1.0f, 0.0f);
+  camera.speed = 1.0f;
 }
