@@ -3,6 +3,7 @@
 #include "vulkan/vulkan.hpp"
 #include <chrono>
 #include <fstream>
+#include <glm/trigonometric.hpp>
 #include <iostream>
 #include <map>
 #define STB_IMAGE_IMPLEMENTATION
@@ -1153,18 +1154,27 @@ void Engine::cleanup() {
 
 void Engine::createGameObjects() {
   Transform t1{.position = glm::vec3(0.0f),
-               .rotation = glm::vec3(glm::radians(-90.0f), 0.0f, 0.0f),
+               .rotation =
+                   glm::vec3(glm::radians(-90.0f), 0.0f, glm::radians(180.0f)),
                .scale = glm::vec3(1.0f)};
   createGameObject("viking room", "viking room", t1);
-  Transform t2{.position = glm::vec3(1.0f, 0.0f, 0.0f),
-               .rotation = glm::vec3(0.0f),
+  Transform t2{.position = glm::vec3(0.0f, 0.0f, -5.0f),
+               .rotation = glm::vec3(glm::radians(90.0f), 0.0f, 0.0f),
                .scale = glm::vec3(1.0f)};
   createGameObject("plane", "pog", t2);
+  Transform t3{.position = glm::vec3(5.0f, 0.0f, 0.0f),
+               .rotation = glm::vec3(glm::radians(-90.0f), 0.0f, 0.0f),
+               .scale = glm::vec3(1.0f)};
+  createGameObject("viking room", "pog", t3);
 }
 
 void Engine::createGameObject(const std::string &meshName,
                               const std::string &textureName,
                               Transform transform) {
+  if (meshMap.find(meshName) == meshMap.end() ||
+      textureMap.find(textureName) == textureMap.end()) {
+    throw std::runtime_error("Mesh or texture not found");
+  }
   gameObjects.emplace_back(meshMap[meshName], textureMap[textureName],
                            transform);
 }
@@ -1174,6 +1184,7 @@ void Engine::createMeshes() {
   std::vector<uint32_t> indices;
   createMesh(vertices, indices, "plane", "./models/plane.obj");
   createMesh(vertices, indices, "viking room", "./models/viking_room.obj");
+  createMesh(vertices, indices, "viking room 2", "./models/viking_room.obj");
   createVertexBuffer(vertices);
   createIndexBuffer(indices);
 }
@@ -1200,6 +1211,7 @@ void Engine::createMesh(std::vector<Vertex> &vertices,
       .firstIndex = static_cast<uint32_t>(indices.size()),
       .indexCount = 0,
   };
+  int currIndex{0};
   for (const auto &shape : shapes) {
     for (const auto &index : shape.mesh.indices) {
       Vertex vertex{};
@@ -1213,7 +1225,7 @@ void Engine::createMesh(std::vector<Vertex> &vertices,
       vertex.color = {1.0f, 1.0f, 1.0f};
       vertices.push_back(vertex);
       mesh.vertexCount += 1;
-      indices.push_back(indices.size());
+      indices.push_back(currIndex++);
       mesh.indexCount += 1;
     }
   }
@@ -1238,8 +1250,8 @@ void Engine::createVertexBuffer(const std::vector<Vertex> &vertices) {
 }
 
 void Engine::initCamera() {
-  camera.position = glm::vec3(2.0f, 0.0f, 0.0f);
-  camera.direction = glm::vec3(-1.0f, 0.0f, 0.0f);
+  camera.position = glm::vec3(0.0f, 0.0f, 2.0f);
+  camera.direction = glm::vec3(0.0f, 0.0f, -1.0f);
   camera.up = glm::vec3(0.0f, 1.0f, 0.0f);
   camera.speed = 1.0f;
 }
