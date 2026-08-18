@@ -22,35 +22,30 @@ find_package(Vulkan REQUIRED)
 target_link_libraries(main PRIVATE glfw Vulkan::Vulkan)
 
 find_program(SLANGC_EXECUTABLE NAMES slangc slangc.exe REQUIRED)
-function(add_slang_shader_target target)
-  cmake_parse_arguments(SHADER "" "" "SOURCES" ${ARGN})
-  if(NOT SHADER_SOURCES)
-    message(FATAL_ERROR "${target}: provide SOURCES")
-  endif()
-  set(shader_output "${CMAKE_CURRENT_BINARY_DIR}/shaders/shader.spv")
+function(compile_shader shader)
   add_custom_command(
-        OUTPUT "${shader_output}"
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shaders/${shader}.spv"
         COMMAND ${CMAKE_COMMAND} -E make_directory
                 "${CMAKE_CURRENT_BINARY_DIR}/shaders"
         COMMAND "${SLANGC_EXECUTABLE}"
-                ${SHADER_SOURCES}
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.slang"
                 -target spirv
                 -profile spirv_1_4
                 -emit-spirv-directly
                 -fvk-use-entrypoint-name
                 -entry vertMain
-                -entry fragMain
-                -o "${shader_output}"
-        DEPENDS ${SHADER_SOURCES}
-        COMMENT "Compiling Slang shaders"
-        VERBATIM
+        -entry fragMain
+        -o "${CMAKE_CURRENT_BINARY_DIR}/shaders/${shader}.spv"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.slang"
     )
-  add_custom_target(${target} DEPENDS "${shader_output}")
+  add_custom_target(${shader}
+      DEPENDS
+      "${CMAKE_CURRENT_BINARY_DIR}/shaders/${shader}.spv"
+    )
+  add_dependencies(main ${shader})
 endfunction()
-add_slang_shader_target(shaders
-    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/shaders/shader.slang"
-)
-add_dependencies(main shaders)
+compile_shader(shader)
+compile_shader(line_shader)
 
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
   if (MSVC)

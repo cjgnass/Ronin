@@ -50,6 +50,32 @@ struct Vertex {
   }
 };
 
+struct LineVertex {
+  glm::vec3 position;
+  glm::vec3 color;
+  glm::vec2 texCoord;
+
+  static vk::VertexInputBindingDescription getBindingDescriptions() {
+    return {.binding = 0,
+            .stride = sizeof(LineVertex),
+            .inputRate = vk::VertexInputRate::eVertex};
+  }
+
+  static std::array<vk::VertexInputAttributeDescription, 2>
+  getAttributeDescriptions() {
+    return {{
+        {.location = 0,
+         .binding = 0,
+         .format = vk::Format::eR32G32B32Sfloat,
+         .offset = offsetof(LineVertex, position)},
+        {.location = 1,
+         .binding = 0,
+         .format = vk::Format::eR32G32B32Sfloat,
+         .offset = offsetof(LineVertex, color)},
+    }};
+  }
+};
+
 struct Mesh {
   uint32_t firstVertex;
   uint32_t vertexCount;
@@ -94,13 +120,16 @@ struct Engine {
   void createSwapchainImageViews();
   void createDescriptorSetLayout();
   void createGraphicsPipeline();
+  void createLinePipeline();
   void createCommandPool();
   void createDepthResources();
   void createTextures();
   void createTextureSampler();
   void createMeshes();
+  void createLineVertexBuffer();
   void createGameObjects();
   void createUniformBuffers();
+
   void createDescriptorPool();
   void createDescriptorSets();
   void createCommandBuffers();
@@ -112,6 +141,7 @@ struct Engine {
   void createTexture(const std::string &name, const std::string &path);
   void createGameObject(const std::string &meshName,
                         const std::string &textureName, Transform transform);
+
   void createVertexBuffer(const std::vector<Vertex> &vertices);
   void createIndexBuffer(const std::vector<uint32_t> &indices);
   static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(
@@ -156,11 +186,9 @@ struct Engine {
                                vk::PipelineStageFlags2 src_stage_mask,
                                vk::PipelineStageFlags2 dst_stage_mask,
                                vk::ImageAspectFlags image_aspect_flags);
-
   void cleanup();
 
   uint32_t frameIndex{0};
-
   int width;
   int height;
   std::string title;
@@ -204,7 +232,6 @@ struct Engine {
   std::vector<vk::raii::Semaphore> presentCompleteSemaphores;
   std::vector<vk::raii::Semaphore> renderFinishedSemaphores;
   std::vector<vk::raii::Fence> inFlightFences;
-
   std::vector<Texture> textures;
   std::unordered_map<std::string, uint32_t> textureMap;
   std::vector<Mesh> meshes;
@@ -212,4 +239,16 @@ struct Engine {
   std::vector<GameObject> gameObjects;
   std::unordered_map<std::string, uint32_t> gameObjectMap;
   Camera camera;
+
+  vk::raii::PipelineLayout linePipelineLayout{nullptr};
+  vk::raii::Pipeline linePipeline{nullptr};
+  vk::raii::Buffer lineVertexBuffer{nullptr};
+  vk::raii::DeviceMemory lineVertexBufferMemory{nullptr};
+  vk::raii::DescriptorSetLayout lineDescriptorSetLayout{nullptr};
+  vk::raii::DescriptorPool lineDescriptorPool{nullptr};
+  std::vector<vk::raii::DescriptorSet> lineDescriptorSets;
+  std::vector<LineVertex> lineVertices = {
+      {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+      {{1.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+  };
 };

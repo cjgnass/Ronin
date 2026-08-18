@@ -49,11 +49,13 @@ void Engine::initVulkan() {
   createSwapchainImageViews();
   createDescriptorSetLayout();
   createGraphicsPipeline();
+  createLinePipeline();
   createCommandPool();
+  createLineVertexBuffer();
   createDepthResources();
+  createMeshes();
   createTextures();
   createTextureSampler();
-  createMeshes();
   createGameObjects();
   createUniformBuffers();
   createDescriptorPool();
@@ -352,6 +354,18 @@ void Engine::createDescriptorSetLayout() {
       .bindingCount = static_cast<uint32_t>(bindings.size()),
       .pBindings = bindings.data()};
   descriptorSetLayout = vk::raii::DescriptorSetLayout(device, layoutInfo);
+
+  std::array<vk::DescriptorSetLayoutBinding, 1> lineBindings{{
+      {.binding = 0,
+       .descriptorType = vk::DescriptorType::eUniformBuffer,
+       .descriptorCount = 1,
+       .stageFlags = vk::ShaderStageFlagBits::eVertex},
+  }};
+  vk::DescriptorSetLayoutCreateInfo lineLayoutInfo{
+      .bindingCount = static_cast<uint32_t>(lineBindings.size()),
+      .pBindings = lineBindings.data()};
+  lineDescriptorSetLayout =
+      vk::raii::DescriptorSetLayout(device, lineLayoutInfo);
 }
 
 void Engine::createGraphicsPipeline() {
@@ -606,6 +620,17 @@ void Engine::createDescriptorPool() {
       .poolSizeCount = static_cast<uint32_t>(poolSize.size()),
       .pPoolSizes = poolSize.data()};
   descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
+
+  std::array<vk::DescriptorPoolSize, 1> linePoolSize{{
+      {.type = vk::DescriptorType::eUniformBuffer,
+       .descriptorCount = MAX_FRAMES_IN_FLIGHT},
+  }};
+  vk::DescriptorPoolCreateInfo linePoolInfo{
+      .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+      .maxSets = setCount,
+      .poolSizeCount = static_cast<uint32_t>(linePoolSize.size()),
+      .pPoolSizes = linePoolSize.data()};
+  lineDescriptorPool = vk::raii::DescriptorPool(device, linePoolInfo);
 }
 
 void Engine::createDescriptorSets() {
@@ -620,18 +645,25 @@ void Engine::createDescriptorSets() {
 
   descriptorSets = device.allocateDescriptorSets(allocInfo);
 
+  std::vector<vk::DescriptorSetLayout> lineLayouts(MAX_FRAMES_IN_FLIGHT,
+                                                   *lineDescriptorSetLayout);
+  vk::DescriptorSetAllocateInfo lineAllocInfo{
+      .descriptorPool = lineDescriptorPool,
+      .descriptorSetCount = static_cast<uint32_t>(lineLayouts.size()),
+      .pSetLayouts = lineLayouts.data()};
+  lineDescriptorSets = device.allocateDescriptorSets(lineAllocInfo);
+
   for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
+    vk::DescriptorBufferInfo bufferInfo{.buffer = uniformBuffers[frame],
+                                        .offset = 0,
+                                        .range = sizeof(UniformBufferObject)};
+    vk::DescriptorBufferInfo objectBufferInfo{.buffer = objectBuffers[frame],
+                                              .offset = 0,
+                                              .range =
+                                                  sizeof(ObjectBufferObject)};
     for (uint32_t textureIndex = 0; textureIndex < textureCount;
          ++textureIndex) {
       const uint32_t setIndex = frame * textureCount + textureIndex;
-
-      vk::DescriptorBufferInfo bufferInfo{.buffer = uniformBuffers[frame],
-                                          .offset = 0,
-                                          .range = sizeof(UniformBufferObject)};
-      vk::DescriptorBufferInfo objectBufferInfo{.buffer = objectBuffers[frame],
-                                                .offset = 0,
-                                                .range =
-                                                    sizeof(ObjectBufferObject)};
 
       vk::DescriptorImageInfo imageInfo{
           .sampler = textureSampler,
@@ -658,6 +690,15 @@ void Engine::createDescriptorSets() {
 
       device.updateDescriptorSets(writes, {});
     }
+    std::array<vk::WriteDescriptorSet, 1> lineWrites{{
+        {.dstSet = lineDescriptorSets[frame],
+         .dstBinding = 0,
+         .descriptorCount = 1,
+         .descriptorType = vk::DescriptorType::eUniformBuffer,
+         .pBufferInfo = &bufferInfo},
+    }};
+
+    device.updateDescriptorSets(lineWrites, {});
   }
 }
 
@@ -1077,14 +1118,27 @@ void Engine::recordCommandBuffer(int imageIndex) {
       .pDepthAttachment = &depthAttachmentInfo};
 
   commandBuffer.beginRendering(renderingInfo);
-  commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
-                             *graphicsPipeline);
   commandBuffer.setViewport(
       0, vk::Viewport(0.0f, 0.0f, static_cast<float>(extent.width),
                       static_cast<float>(extent.height), 0.0f, 1.0f));
   commandBuffer.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), extent));
+  // draw lines
+  commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *linePipeline);
+  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                   linePipelineLayout, 0,
+                                   *lineDescriptorSets[frameIndex], {});
+  commandBuffer.bindVertexBuffers(0, *lineVertexBuffer, {0});
+  commandBuffer.draw(2, // vertexCount
+                     1, // instanceCount
+                     0, // firstVertex
+                     0  // firstInstance
+  );
+
+  // draw game objects
   commandBuffer.bindVertexBuffers(0, *vertexBuffer, {0});
   commandBuffer.bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
+  commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                             *graphicsPipeline);
   const uint32_t textureCount = static_cast<uint32_t>(textures.size());
   for (size_t objectIndex = 0; objectIndex < gameObjects.size();
        ++objectIndex) {
@@ -1093,7 +1147,6 @@ void Engine::recordCommandBuffer(int imageIndex) {
         frameIndex * textureCount + gameObject.textureIndex;
     const std::array<uint32_t, 1> dynamicOffsets{
         static_cast<uint32_t>(objectIndex * objectStride)};
-
     commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
                                      graphicsPipelineLayout, 0,
                                      *descriptorSets[setIndex], dynamicOffsets);
@@ -1254,4 +1307,143 @@ void Engine::initCamera() {
   camera.direction = glm::vec3(0.0f, 0.0f, -1.0f);
   camera.up = glm::vec3(0.0f, 1.0f, 0.0f);
   camera.speed = 1.0f;
+}
+
+void Engine::createLinePipeline() {
+  // read shader file
+  std::ifstream shaderFile("./build/shaders/line_shader.spv",
+                           std::ios::ate | std::ios::binary);
+  if (!shaderFile.is_open()) {
+    throw std::runtime_error("Failed to open shader file");
+  }
+  std::vector<char> shaderBuffer(shaderFile.tellg());
+  shaderFile.seekg(0);
+  shaderFile.read(shaderBuffer.data(), shaderBuffer.size());
+  shaderFile.close();
+  // create line pipeline
+  vk::ShaderModuleCreateInfo shaderModuleCreateInfo{
+      .codeSize = shaderBuffer.size(),
+      .pCode = reinterpret_cast<const uint32_t *>(shaderBuffer.data()),
+  };
+  vk::raii::ShaderModule shaderModule{device, shaderModuleCreateInfo};
+  vk::PipelineShaderStageCreateInfo vertShaderStageCreateInfo{
+      .stage = vk::ShaderStageFlagBits::eVertex,
+      .module = shaderModule,
+      .pName = "vertMain",
+  };
+  vk::PipelineShaderStageCreateInfo fragShaderStageCreateInfo{
+      .stage = vk::ShaderStageFlagBits::eFragment,
+      .module = shaderModule,
+      .pName = "fragMain",
+  };
+  vk::PipelineShaderStageCreateInfo shaderStages[]{vertShaderStageCreateInfo,
+                                                   fragShaderStageCreateInfo};
+  auto bindingDescriptions{LineVertex::getBindingDescriptions()};
+  auto attributeDescriptions{LineVertex::getAttributeDescriptions()};
+  vk::PipelineVertexInputStateCreateInfo vertexInputInfo{
+      .vertexBindingDescriptionCount = 1,
+      .pVertexBindingDescriptions = &bindingDescriptions,
+      .vertexAttributeDescriptionCount =
+          static_cast<uint32_t>(attributeDescriptions.size()),
+      .pVertexAttributeDescriptions = attributeDescriptions.data()};
+  vk::PipelineInputAssemblyStateCreateInfo inputAssemblyCreateInfo{
+      .topology = vk::PrimitiveTopology::eLineList};
+  vk::Viewport viewport{0.0f,
+                        0.0f,
+                        static_cast<float>(extent.width),
+                        static_cast<float>(extent.height),
+                        0.0f,
+                        1.0f};
+  vk::Rect2D scissor{vk::Offset2D{0, 0}, extent};
+  vk::PipelineViewportStateCreateInfo viewportStateCreateInfo{
+      .viewportCount = 1,
+      .pViewports = &viewport,
+      .scissorCount = 1,
+      .pScissors = &scissor};
+  vk::PipelineRasterizationStateCreateInfo rasterizerCreateInfo{
+      .depthClampEnable = vk::False,
+      .rasterizerDiscardEnable = vk::False,
+      .polygonMode = vk::PolygonMode::eFill,
+      .cullMode = vk::CullModeFlagBits::eNone,
+      .frontFace = vk::FrontFace::eClockwise,
+      .depthBiasEnable = vk::False,
+      .lineWidth = 1.0f};
+  vk::PipelineMultisampleStateCreateInfo multisamplingCreateInfo{
+      .rasterizationSamples = vk::SampleCountFlagBits::e1,
+      .sampleShadingEnable = vk::False};
+  vk::PipelineColorBlendAttachmentState colorBlendAttachment{
+      .blendEnable = vk::True,
+      .srcColorBlendFactor = vk::BlendFactor::eSrcAlpha,
+      .dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+      .colorBlendOp = vk::BlendOp::eAdd,
+      .srcAlphaBlendFactor = vk::BlendFactor::eOne,
+      .dstAlphaBlendFactor = vk::BlendFactor::eZero,
+      .alphaBlendOp = vk::BlendOp::eAdd,
+      .colorWriteMask =
+          vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+          vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA};
+  vk::PipelineColorBlendStateCreateInfo colorBlending{
+      .logicOpEnable = vk::False,
+      .logicOp = vk::LogicOp::eCopy,
+      .attachmentCount = 1,
+      .pAttachments = &colorBlendAttachment};
+  vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
+      .setLayoutCount = 1,
+      .pSetLayouts = &*lineDescriptorSetLayout,
+      .pushConstantRangeCount = 0,
+  };
+  linePipelineLayout = vk::raii::PipelineLayout{device, pipelineLayoutInfo};
+  std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport,
+                                                 vk::DynamicState::eScissor};
+  vk::PipelineDynamicStateCreateInfo dynamicState{
+      .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+      .pDynamicStates = dynamicStates.data()};
+  vk::PipelineDepthStencilStateCreateInfo depthStencil{
+      .depthTestEnable = vk::True,
+      .depthWriteEnable = vk::True,
+      .depthCompareOp = vk::CompareOp::eLess,
+      .depthBoundsTestEnable = vk::False,
+      .stencilTestEnable = vk::False};
+  vk::StructureChain<vk::GraphicsPipelineCreateInfo,
+                     vk::PipelineRenderingCreateInfo>
+      pipelineCreateInfoChain = {
+          {.stageCount = 2,
+           .pStages = shaderStages,
+           .pVertexInputState = &vertexInputInfo,
+           .pInputAssemblyState = &inputAssemblyCreateInfo,
+           .pViewportState = &viewportStateCreateInfo,
+           .pRasterizationState = &rasterizerCreateInfo,
+           .pMultisampleState = &multisamplingCreateInfo,
+           .pDepthStencilState = &depthStencil,
+           .pColorBlendState = &colorBlending,
+           .pDynamicState = &dynamicState,
+           .layout = linePipelineLayout,
+           .renderPass = nullptr},
+          {.colorAttachmentCount = 1,
+           .pColorAttachmentFormats = &swapchainSurfaceFormat.format,
+           .depthAttachmentFormat = findSupportedFormat(
+               {vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint,
+                vk::Format::eD24UnormS8Uint},
+               vk::ImageTiling::eOptimal,
+               vk::FormatFeatureFlagBits::eDepthStencilAttachment)}};
+  linePipeline = vk::raii::Pipeline{
+      device, nullptr,
+      pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>()};
+}
+
+void Engine::createLineVertexBuffer() {
+  vk::DeviceSize bufferSize{sizeof(lineVertices[0]) * lineVertices.size()};
+  auto [stagingBuffer, stagingBufferMemory] =
+      createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                   vk::MemoryPropertyFlagBits::eHostVisible |
+                       vk::MemoryPropertyFlagBits::eHostCoherent);
+  void *dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+  memcpy(dataStaging, lineVertices.data(), bufferSize);
+  stagingBufferMemory.unmapMemory();
+  std::tie(lineVertexBuffer, lineVertexBufferMemory) =
+      createBuffer(bufferSize,
+                   vk::BufferUsageFlagBits::eVertexBuffer |
+                       vk::BufferUsageFlagBits::eTransferDst,
+                   vk::MemoryPropertyFlagBits::eDeviceLocal);
+  copyBuffer(stagingBuffer, lineVertexBuffer, bufferSize);
 }
