@@ -54,6 +54,9 @@ init_renderer :: proc(renderer: ^Renderer) {
 	for glfw_extension in glfw.GetRequiredInstanceExtensions() {
 		append(&instance_extensions, glfw_extension)
 	}
+	when ODIN_OS == .Darwin {
+		append(&instance_extensions, vk.KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)
+	}
 	when ENABLE_VALIDATION_LAYER {
 		append(&instance_extensions, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
 	}
@@ -72,6 +75,9 @@ init_renderer :: proc(renderer: ^Renderer) {
 		ppEnabledLayerNames     = raw_data(instance_layers),
 		enabledExtensionCount   = u32(len(instance_extensions)),
 		ppEnabledExtensionNames = raw_data(instance_extensions),
+	}
+	when ODIN_OS == .Darwin {
+		instance_info.flags = {.ENUMERATE_PORTABILITY_KHR}
 	}
 	instance: vk.Instance
 	vk.load_proc_addresses_global(glfw.GetInstanceProcAddress(nil, "vkGetInstanceProcAddr"))
